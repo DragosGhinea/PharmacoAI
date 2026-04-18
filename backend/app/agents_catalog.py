@@ -1,0 +1,95 @@
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+
+from .agents_schemas import AgentDefinition, AgentProvider
+
+
+def default_agent_definitions() -> list[AgentDefinition]:
+    return [
+        AgentDefinition(
+            id="medication-info-agent",
+            name="Medication Info Agent",
+            description=(
+                "Retrieval-first medication intelligence agent: normalizes medication names, "
+                "grounds answers in openFDA/DailyMed evidence, and produces clinician-facing summaries."
+            ),
+            provider=AgentProvider.GEMINI,
+            model="gemini-1.5-flash",
+            system_prompt=(
+                "You are a medication information agent. Use only provided evidence context and clearly label uncertainty. "
+                "Return structured, concise clinician-style output."
+            ),
+            api_key_env="GEMINI_API_KEY_1",
+            style_tags=["basic-assistant", "clinical-analyst"],
+            risk_tier="informational",
+            temperature=0.1,
+        ),
+        AgentDefinition(
+            id="layman-translator-agent",
+            name="Layman Translator Agent",
+            description=(
+                "Transforms clinical medication information into patient-friendly language while preserving safety warnings "
+                "and citing grounded evidence."
+            ),
+            provider=AgentProvider.GEMINI,
+            model="gemini-1.5-flash",
+            system_prompt=(
+                "You are a patient-language translator. Rewrite technical medication content into clear, calm language "
+                "without inventing medical facts."
+            ),
+            api_key_env="GEMINI_API_KEY_3",
+            style_tags=["basic-assistant"],
+            risk_tier="informational",
+            temperature=0.4,
+        ),
+        AgentDefinition(
+            id="safety-contraindication-agent",
+            name="Safety Contraindication Agent",
+            description=(
+                "Extracts contraindications, interactions, and do-not-combine risks from grounded label evidence, "
+                "and returns escalation-oriented safety findings."
+            ),
+            provider=AgentProvider.GEMINI,
+            model="gemini-1.5-pro",
+            system_prompt=(
+                "You are a medication safety reviewer. Prioritize contraindications, interactions, and red flags. "
+                "If context is missing, state it explicitly and avoid definitive diagnosis."
+            ),
+            api_key_env="GEMINI_API_KEY_2",
+            style_tags=["clinical-analyst", "strategic-advisor"],
+            risk_tier="clinical-risk",
+            temperature=0.1,
+        ),
+    ]
+
+
+def load_agent_definitions() -> list[AgentDefinition]:
+    config_path = os.getenv("PHARMACOAI_AGENTS_CONFIG", "").strip()
+    if not config_path:
+        return default_agent_definitions()
+
+    path = Path(config_path)
+    if not path.exists() or not path.is_file():
+        return default_agent_definitions()
+
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return default_agent_definitions()
+
+    if not isinstance(raw, list):
+        return default_agent_definitions()
+
+    parsed: list[AgentDefinition] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        try:
+            parsed.append(AgentDefinition.model_validate(item))
+        except Exception:
+            continue
+
+    return parsed or default_agent_definitions()

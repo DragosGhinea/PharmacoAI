@@ -1,10 +1,20 @@
 from __future__ import annotations
 
+from fastapi import HTTPException, status
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from .agents_schemas import (
+    AgentChatRequest,
+    AgentChatResponse,
+    AgentConversation,
+    AgentDefinition,
+    AgentHandoffRequest,
+    AgentListResponse,
+)
+from .agents_service import AgentsService
 from .auth import get_current_user, require_admin
-from .deps import get_user_service
+from .deps import get_agents_service, get_user_service
 from .schemas import (
     AuthLoginRequest,
     AuthLoginResponse,
@@ -132,8 +142,51 @@ def simulate_message(
     service: UserService = Depends(get_user_service),
 ) -> MessageSimulationResponse:
     if current_user.role != "admin" and current_user.id != user_id:
-        from fastapi import HTTPException, status
-
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
 
     return service.simulate_message(user_id, payload.prompt)
+
+
+@app.get("/agents", response_model=AgentListResponse)
+def list_agents(
+    current_user: UserRecord = Depends(get_current_user),
+    service: AgentsService = Depends(get_agents_service),
+) -> AgentListResponse:
+    return AgentListResponse(agents=service.list_agents_for_user(user=current_user))
+
+
+@app.get("/agents/{agent_id}", response_model=AgentDefinition)
+def get_agent(
+    agent_id: str,
+    current_user: UserRecord = Depends(get_current_user),
+    service: AgentsService = Depends(get_agents_service),
+) -> AgentDefinition:
+    return service.get_agent_for_user(user=current_user, agent_id=agent_id)
+
+
+@app.post("/agents/{agent_id}/chat", response_model=AgentChatResponse)
+async def chat_with_agent(
+    agent_id: str,
+    payload: AgentChatRequest,
+    current_user: UserRecord = Depends(get_current_user),
+    service: AgentsService = Depends(get_agents_service),
+) -> AgentChatResponse:
+    return await service.chat_with_agent(user=current_user, agent_id=agent_id, payload=payload)
+
+
+@app.post("/agents/handoff", response_model=AgentChatResponse)
+async def handoff_between_agents(
+    payload: AgentHandoffRequest,
+    current_user: UserRecord = Depends(get_current_user),
+    service: AgentsService = Depends(get_agents_service),
+) -> AgentChatResponse:
+    return await service.handoff(user=current_user, payload=payload)
+
+
+@app.get("/agents/conversations/{conversation_id}", response_model=AgentConversation)
+def get_conversation(
+    conversation_id: str,
+    _current_user: UserRecord = Depends(get_current_user),
+    service: AgentsService = Depends(get_agents_service),
+) -> AgentConversation:
+    return service.get_conversation(conversation_id)
