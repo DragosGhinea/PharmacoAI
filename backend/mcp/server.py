@@ -13,7 +13,7 @@ load_root_env()
 
 from .audit import log_audit, setup_audit_logger
 from .data import normalize_token
-from .external_data import fetch_openfda_facts, fetch_openfda_related_medications
+from .external_data import fetch_medication_facts, fetch_openfda_facts, fetch_related_medications
 from .rate_limit import build_default_limiter
 from .safety import collect_context_gaps, warning_from_context_gaps
 from .schemas import MCPError, MCPWarning, ToolEnvelope
@@ -57,10 +57,21 @@ def _resolve_by_name(name: str) -> tuple[dict[str, Any] | None, float, str | Non
     if not USE_EXTERNAL_DATA:
         return None, 0.0, None, []
 
+    confidence_by_source = {
+        "openfda": 0.88,
+        "pubchem": 0.76,
+        "chembl": 0.73,
+    }
     for candidate in _name_candidates(name):
-        external = fetch_openfda_facts(candidate)
+        external = fetch_medication_facts(candidate)
         if external is not None:
-            return external, 0.88, candidate, []
+            matched_sources = external.get("sources", [])
+            if not isinstance(matched_sources, list) or not matched_sources:
+                matched_sources = [str(external.get("source", "")).lower()]
+            confidence = max(
+                [confidence_by_source.get(str(source).lower(), 0.7) for source in matched_sources] or [0.7]
+            )
+            return external, confidence, candidate, []
 
     return None, 0.0, None, []
 
@@ -157,6 +168,10 @@ def normalize_medication_name(name: str, caller_id: str = "anonymous") -> dict[s
         "canonical_name": payload["canonical_name"],
         "matched_on": matched_on,
         "aliases": payload.get("aliases", []),
+        "sources": payload.get("sources", [payload.get("source", "unknown")]),
+        "source_results": payload.get("source_results", []),
+        "identifiers": payload.get("identifiers", {}),
+        "source_links": [link for link in payload.get("source_links", []) if link],
         "confidence": confidence,
         "source": payload.get("source", "openfda"),
         "evidence": [
@@ -212,6 +227,10 @@ def search_medication_facts(name: str, caller_id: str = "anonymous") -> dict[str
         "indications": payload.get("indications", []),
         "dosage_form": payload.get("dosage_form", "unknown"),
         "pharmacologic_class": payload.get("pharmacologic_class", "unknown"),
+        "sources": payload.get("sources", [payload.get("source", "unknown")]),
+        "source_results": payload.get("source_results", []),
+        "identifiers": payload.get("identifiers", {}),
+        "source_links": [link for link in payload.get("source_links", []) if link],
         "source": payload.get("source", "openfda"),
         "evidence": [
             {
@@ -223,6 +242,88 @@ def search_medication_facts(name: str, caller_id: str = "anonymous") -> dict[str
 
     result = _envelope(ok=True, risk_tier="informational", data=data)
     log_audit("search_medication_facts", caller_id, "success", "informational")
+    return result
+
+
+@mcp.tool(
+    title="Search Medication Indications",
+    description="Retrieve indications and supporting evidence for a medication.",
+)
+def search_medication_indications(name: str, caller_id: str = "anonymous") -> dict[str, Any]:
+    """Fetch indications and indication evidence for a medication."""
+    blocked = _preflight("search_medication_indications", caller_id, "informational")
+    if blocked:
+        return blocked
+
+    payload, _, _, _ = _resolve_by_name(name)
+    if payload is None:
+        result = _envelope(
+            ok=False,
+            risk_tier="informational",
+            error={"code": "NOT_FOUND", "message": "Medication indications were not found."},
+        )
+        log_audit("search_medication_indications", caller_id, "error", "informational")
+        return result
+
+    data = {
+        "drug_id": payload["drug_id"],
+        "canonical_name": payload["canonical_name"],
+        "indications": payload.get("indications", []),
+        "sources": payload.get("sources", [payload.get("source", "unknown")]),
+        "identifiers": payload.get("identifiers", {}),
+        "source_links": [link for link in payload.get("source_links", []) if link],
+        "source": payload.get("source", "openfda"),
+        "evidence": [
+            {
+                "uri": f"drug://label/{payload['drug_id']}",
+                "snippets": payload.get("evidence", {}).get("label", []),
+            }
+        ],
+    }
+
+    result = _envelope(ok=True, risk_tier="informational", data=data)
+    log_audit("search_medication_indications", caller_id, "success", "informational")
+    return result
+
+
+@mcp.tool(
+    title="Search Medication Contraindications",
+    description="Retrieve contraindications and supporting evidence for a medication.",
+)
+def search_medication_contraindications(name: str, caller_id: str = "anonymous") -> dict[str, Any]:
+    """Fetch contraindications and contraindication evidence for a medication."""
+    blocked = _preflight("search_medication_contraindications", caller_id, "informational")
+    if blocked:
+        return blocked
+
+    payload, _, _, _ = _resolve_by_name(name)
+    if payload is None:
+        result = _envelope(
+            ok=False,
+            risk_tier="informational",
+            error={"code": "NOT_FOUND", "message": "Medication contraindications were not found."},
+        )
+        log_audit("search_medication_contraindications", caller_id, "error", "informational")
+        return result
+
+    data = {
+        "drug_id": payload["drug_id"],
+        "canonical_name": payload["canonical_name"],
+        "contraindications": payload.get("contraindications", []),
+        "sources": payload.get("sources", [payload.get("source", "unknown")]),
+        "identifiers": payload.get("identifiers", {}),
+        "source_links": [link for link in payload.get("source_links", []) if link],
+        "source": payload.get("source", "openfda"),
+        "evidence": [
+            {
+                "uri": f"drug://contraindications/{payload['drug_id']}",
+                "snippets": payload.get("evidence", {}).get("contraindications", []),
+            }
+        ],
+    }
+
+    result = _envelope(ok=True, risk_tier="informational", data=data)
+    log_audit("search_medication_contraindications", caller_id, "success", "informational")
     return result
 
 
@@ -250,27 +351,77 @@ def find_similar_medications(name: str, caller_id: str = "anonymous") -> dict[st
         return result
 
     target_name = str(payload.get("canonical_name") or name).strip()
-    external_alternatives: list[dict[str, Any]] = []
+    alternatives_bundle: dict[str, Any] = {"related": [], "sources": [], "source_results": []}
     if USE_EXTERNAL_DATA:
-        external_alternatives = fetch_openfda_related_medications(target_name, limit=5)
+        alternatives_bundle = fetch_related_medications(target_name, limit=8)
 
     data = {
         "drug_id": payload["drug_id"],
         "canonical_name": payload["canonical_name"],
-        "alternatives": external_alternatives,
+        "alternatives": alternatives_bundle.get("related", []),
+        "therapeutic_alternatives": alternatives_bundle.get("therapeutic_alternatives", []),
+        "synonym_or_name_neighbors": alternatives_bundle.get("synonym_or_name_neighbors", []),
+        "sources": alternatives_bundle.get("sources", []),
+        "source_results": alternatives_bundle.get("source_results", []),
         "evidence": [
             {
                 "uri": f"drug://classes/{payload['drug_id']}",
                 "snippets": [
-                    "Alternatives are retrieved from external source neighborhood search.",
+                    "Alternatives are retrieved from multi-source neighborhood aggregation.",
                 ],
             }
         ],
-        "source": "openfda",
+        "source": "aggregated",
     }
 
     result = _envelope(ok=True, risk_tier="informational", data=data)
     log_audit("find_similar_medications", caller_id, "success", "informational")
+    return result
+
+
+@mcp.tool(
+    title="Find Synonym Or Name Neighbors",
+    description="Return nearby synonym/name variants for search-term expansion.",
+)
+def find_synonym_or_name_neighbors(name: str, caller_id: str = "anonymous") -> dict[str, Any]:
+    """Return only synonym/name neighbors from multi-source related-medication aggregation."""
+    blocked = _preflight("find_synonym_or_name_neighbors", caller_id, "informational")
+    if blocked:
+        return blocked
+
+    payload, _, _, _ = _resolve_by_name(name)
+    if payload is None:
+        result = _envelope(
+            ok=False,
+            risk_tier="informational",
+            error={
+                "code": "NOT_FOUND",
+                "message": "No source medication found in external sources.",
+            },
+        )
+        log_audit("find_synonym_or_name_neighbors", caller_id, "error", "informational")
+        return result
+
+    target_name = str(payload.get("canonical_name") or name).strip()
+    alternatives_bundle: dict[str, Any] = {
+        "synonym_or_name_neighbors": [],
+        "sources": [],
+        "source_results": [],
+    }
+    if USE_EXTERNAL_DATA:
+        alternatives_bundle = fetch_related_medications(target_name, limit=12)
+
+    data = {
+        "drug_id": payload["drug_id"],
+        "canonical_name": payload["canonical_name"],
+        "synonym_or_name_neighbors": alternatives_bundle.get("synonym_or_name_neighbors", []),
+        "sources": alternatives_bundle.get("sources", []),
+        "source_results": alternatives_bundle.get("source_results", []),
+        "source": "aggregated",
+    }
+
+    result = _envelope(ok=True, risk_tier="informational", data=data)
+    log_audit("find_synonym_or_name_neighbors", caller_id, "success", "informational")
     return result
 
 
@@ -340,6 +491,8 @@ def check_contraindications(
         "canonical_name": payload["canonical_name"],
         "contraindications": payload.get("contraindications", []),
         "red_flags": red_flags,
+        "sources": payload.get("sources", [payload.get("source", "unknown")]),
+        "identifiers": payload.get("identifiers", {}),
         "source": payload.get("source", "openfda"),
         "evidence": [
             {
@@ -424,6 +577,8 @@ def check_interactions(
         "canonical_name": payload["canonical_name"],
         "checked_against": current_medications,
         "findings": findings,
+        "sources": payload.get("sources", [payload.get("source", "unknown")]),
+        "identifiers": payload.get("identifiers", {}),
         "source": payload.get("source", "openfda"),
         "evidence": [
             {
@@ -480,6 +635,8 @@ def explain_for_patient(
     data = {
         "drug_id": payload["drug_id"],
         "canonical_name": payload["canonical_name"],
+        "sources": payload.get("sources", [payload.get("source", "unknown")]),
+        "identifiers": payload.get("identifiers", {}),
         "plain_language_explanation": (
             f"{payload['canonical_name'].title()} may help for {', '.join(payload.get('indications', []))}. "
             f"{simplified} This explanation is educational and not a diagnosis."
@@ -512,6 +669,7 @@ def resource_label(drug_id: str) -> str:
     payload = {
         "drug_id": payload["drug_id"],
         "canonical_name": payload["canonical_name"],
+        "identifiers": payload.get("identifiers", {}),
         "indications": payload.get("indications", []),
         "dosage_form": payload.get("dosage_form", "unknown"),
         "label_summary": payload.get("evidence", {}).get("label", []),

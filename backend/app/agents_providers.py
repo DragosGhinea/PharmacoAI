@@ -9,6 +9,15 @@ from fastapi import HTTPException, status
 from .agents_schemas import AgentDefinition, AgentProvider
 
 
+def _provider_timeout_seconds() -> float:
+    raw = os.getenv("PHARMACOAI_AGENT_PROVIDER_TIMEOUT_SECONDS", "90").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        return 90.0
+    return max(5.0, value)
+
+
 class AgentProviderClient(Protocol):
     async def generate(self, agent: AgentDefinition, messages: list[dict[str, str]]) -> str: ...
 
@@ -39,7 +48,7 @@ class GenericApiAgentClient:
             "Content-Type": "application/json",
         }
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=_provider_timeout_seconds()) as client:
             response = await client.post(agent.base_url, json=payload, headers=headers)
 
         if response.status_code >= 400:
@@ -125,13 +134,13 @@ class GeminiAgentClient:
         data: dict[str, object] | None = None
         for model_name in self._build_model_candidates(agent.model):
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=_provider_timeout_seconds()) as client:
                 response = await client.post(url, json=payload)
 
             if response.status_code >= 400:
                 error_detail = self._extract_error_detail(response)
                 attempts.append((model_name, response.status_code, error_detail))
-                if response.status_code in {404, 429}:
+                if response.status_code in {404, 429, 500, 502, 503, 504}:
                     continue
 
                 raise HTTPException(

@@ -273,7 +273,8 @@ async def chat_with_orchestrator_stream(
     queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
 
     def on_tool_event(event: dict[str, object]) -> None:
-        queue.put_nowait({"type": "tool_call", **event})
+        event_type = str(event.get("event_type") or "tool_call")
+        queue.put_nowait({"type": event_type, **event})
 
     async def run_chat() -> None:
         try:
@@ -283,8 +284,16 @@ async def chat_with_orchestrator_stream(
                 on_tool_event=on_tool_event,
             )
             await queue.put({"type": "final", "data": result.model_dump(mode="json")})
+        except HTTPException as exc:
+            detail = exc.detail
+            if isinstance(detail, str) and detail.strip():
+                message = detail.strip()
+            else:
+                message = f"HTTP {exc.status_code}"
+            await queue.put({"type": "error", "message": message, "status_code": exc.status_code})
         except Exception as exc:  # pragma: no cover - runtime fallback
-            await queue.put({"type": "error", "message": str(exc)})
+            message = str(exc).strip() or f"{exc.__class__.__name__} during orchestrator stream"
+            await queue.put({"type": "error", "message": message})
         finally:
             await queue.put({"type": "done"})
 

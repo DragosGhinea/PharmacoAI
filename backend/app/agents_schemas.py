@@ -45,6 +45,7 @@ class AgentChatRequest(BaseModel):
 
 class AgentChatTurn(BaseModel):
     agent_id: str
+    received_input: str | None = None
     response: str
     provider: AgentProvider
     model: str

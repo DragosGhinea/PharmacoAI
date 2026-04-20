@@ -17,7 +17,10 @@ def call_mcp_tool(tool_name: str, *, args: dict[str, Any], caller_id: str) -> di
     tool_map = {
         "normalize_medication_name": mcp_server.normalize_medication_name,
         "search_medication_facts": mcp_server.search_medication_facts,
+        "search_medication_indications": mcp_server.search_medication_indications,
+        "search_medication_contraindications": mcp_server.search_medication_contraindications,
         "find_similar_medications": mcp_server.find_similar_medications,
+        "find_synonym_or_name_neighbors": mcp_server.find_synonym_or_name_neighbors,
         "collect_missing_context": mcp_server.collect_missing_context,
         "check_contraindications": mcp_server.check_contraindications,
         "check_interactions": mcp_server.check_interactions,

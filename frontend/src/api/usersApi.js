@@ -220,7 +220,8 @@ export async function chatWithOrchestratorStream(userId, payload, onEvent) {
     }
 
     if (event.type === 'error') {
-      throw new Error(String(event.message || 'Streaming request failed'));
+      const statusInfo = event.status_code ? ` (HTTP ${event.status_code})` : '';
+      throw new Error(String(event.message || 'Streaming request failed') + statusInfo);
     }
     if (event.type === 'final') {
       finalData = event.data;

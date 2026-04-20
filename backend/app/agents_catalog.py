@@ -10,6 +10,59 @@ from .agents_schemas import AgentDefinition, AgentProvider
 def default_agent_definitions() -> list[AgentDefinition]:
     return [
         AgentDefinition(
+            id="medication-normalization-agent",
+            name="Medication Normalization Agent",
+            description=(
+                "Expands medication search terms by normalization and synonym/name-neighbor discovery only."
+            ),
+            provider=AgentProvider.GEMINI,
+            model="gemini-3-flash-preview",
+            system_prompt=(
+                "You are the normalization stage. Use only provided tool evidence to build a precise search-term list. "
+                "Do not provide final medical recommendations. "
+                "Return a compact list of candidate search terms and why each is relevant."
+            ),
+            api_key_env="GEMINI_API_KEY_1",
+            style_tags=["basic-assistant", "clinical-analyst"],
+            risk_tier="informational",
+            temperature=0.1,
+        ),
+        AgentDefinition(
+            id="medication-evidence-gathering-agent",
+            name="Medication Evidence Gathering Agent",
+            description=(
+                "Collects grounded medical evidence using normalized search terms and retrieval-only medication tools."
+            ),
+            provider=AgentProvider.GEMINI,
+            model="gemini-3-flash-preview",
+            system_prompt=(
+                "You are the evidence gathering stage. Use only grounded retrieved outputs. "
+                "Summarize facts, indications, and contraindications with source-aware uncertainty. "
+                "Do not provide final patient-facing advice yet."
+            ),
+            api_key_env="GEMINI_API_KEY_2",
+            style_tags=["basic-assistant", "clinical-analyst", "strategic-advisor"],
+            risk_tier="informational",
+            temperature=0.1,
+        ),
+        AgentDefinition(
+            id="medication-answer-synthesis-agent",
+            name="Medication Answer Synthesis Agent",
+            description=(
+                "Synthesizes gathered medical evidence into a direct answer aligned with the original user query."
+            ),
+            provider=AgentProvider.GEMINI,
+            model="gemini-3-flash-preview",
+            system_prompt=(
+                "You are the synthesis stage. Reinforce and answer the original user intent using only gathered evidence. "
+                "Highlight uncertainty and conflicting source findings when present."
+            ),
+            api_key_env="GEMINI_API_KEY_3",
+            style_tags=["basic-assistant", "clinical-analyst", "strategic-advisor"],
+            risk_tier="informational",
+            temperature=0.2,
+        ),
+        AgentDefinition(
             id="medication-info-agent",
             name="Medication Info Agent",
             description=(

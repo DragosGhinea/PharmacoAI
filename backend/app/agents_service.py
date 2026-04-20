@@ -32,6 +32,7 @@ class AgentsService:
         self._definitions = {item.id: item for item in load_agent_definitions() if item.enabled}
         self._conversations: dict[str, AgentConversation] = {}
         self._tool_history: dict[str, list[str]] = {}
+        self._tool_calls_by_message: dict[str, dict[str, list[dict[str, Any]]]] = {}
         self._lock = Lock()
 
     def list_agents(self) -> list[AgentDefinition]:
@@ -84,49 +85,23 @@ class AgentsService:
         available_agents = [agent.id for agent in self.list_agents_for_user(user=user)]
         if not available_agents:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No agents available for the user's tier")
-
-        message = payload.message.lower()
-        metadata = payload.metadata if isinstance(payload.metadata, dict) else {}
-        has_med_context = bool(metadata.get("current_medications") or metadata.get("patient_context"))
-        wants_safety = any(
-            keyword in message
-            for keyword in [
-                "interaction",
-                "interactions",
-                "contraind",
-                "side effect",
-                "adverse",
-                "risk",
-                "safe",
-                "sigur",
-                "contraindic",
-                "efecte adverse",
-            ]
-        )
-        wants_patient_friendly = any(
-            keyword in message
-            for keyword in [
-                "simple",
-                "plain",
-                "for patient",
-                "layman",
-                "romanian",
-                "romaneste",
-                "explica",
-                "pe inteles",
-            ]
-        )
-
         chain: list[str] = []
 
         def _add(agent_id: str) -> None:
             if agent_id in available_agents and agent_id not in chain:
                 chain.append(agent_id)
 
-        _add("medication-info-agent")
-        if wants_safety or has_med_context:
+        # Preferred explicit pipeline:
+        # 1) normalization/neighbors -> 2) evidence gathering -> 3) synthesis -> 4) layman rewrite.
+        _add("medication-normalization-agent")
+        _add("medication-evidence-gathering-agent")
+        _add("medication-answer-synthesis-agent")
+        _add("layman-translator-agent")
+
+        # Compatibility fallback if any dedicated stage agent is unavailable.
+        if not chain:
+            _add("medication-info-agent")
             _add("safety-contraindication-agent")
-        if wants_patient_friendly or "safety-contraindication-agent" in chain:
             _add("layman-translator-agent")
 
         if not chain:
@@ -150,39 +125,76 @@ class AgentsService:
 
         grounded_context = await self._build_grounding_context(payload)
 
-        self._append_message(
-            conversation.conversation_id,
-            AgentMessage(
-                role="user",
-                content=payload.message,
-                sender=user.id,
-                timestamp=_utcnow(),
-            ),
-        )
+        resume_anchor_idx = self._resolve_resume_anchor(conversation=conversation, user_id=user.id, payload=payload)
+        is_resuming_partial = resume_anchor_idx is not None
+        if not is_resuming_partial:
+            self._append_message(
+                conversation.conversation_id,
+                AgentMessage(
+                    role="user",
+                    content=payload.message,
+                    sender=user.id,
+                    timestamp=_utcnow(),
+                ),
+            )
 
         turns: list[AgentChatTurn] = []
+        start_idx = 0
         current_input = payload.message
+        if is_resuming_partial and resume_anchor_idx is not None:
+            restored_turns = self._restore_completed_turns(
+                user=user,
+                conversation=conversation,
+                chain=chain,
+                grounded_context=grounded_context,
+                anchor_idx=resume_anchor_idx,
+                payload_message=payload.message,
+            )
+            if restored_turns:
+                turns.extend(restored_turns)
+                start_idx = len(restored_turns)
+                current_input = restored_turns[-1].response
+
         conversation_tool_history = list(self._tool_history.get(conversation.conversation_id, []))
 
-        for idx, next_agent_id in enumerate(chain):
+        for idx in range(start_idx, len(chain)):
+            next_agent_id = chain[idx]
             current_agent = self.get_agent_for_user(user=user, agent_id=next_agent_id)
+            stage_input = current_input
             if idx > 0:
-                self._append_message(
-                    conversation.conversation_id,
-                    AgentMessage(
-                        role="agent",
-                        content=current_input,
-                        sender=chain[idx - 1],
-                        timestamp=_utcnow(),
-                    ),
+                self._append_agent_handoff_message_if_missing(
+                    conversation_id=conversation.conversation_id,
+                    content=current_input,
+                    sender=chain[idx - 1],
+                )
+
+            if on_tool_event:
+                on_tool_event(
+                    {
+                        "event_type": "step_started",
+                        "turn_index": idx,
+                        "agent_id": current_agent.id,
+                        "stage_input": stage_input,
+                        "message": f"Starting {current_agent.name}",
+                    }
                 )
 
             mcp_tool_calls = await self._run_agent_mcp_tools(
                 agent_id=current_agent.id,
                 grounded_context=grounded_context,
                 user_id=user.id,
+                previous_turns=turns,
                 on_tool_call=(
-                    (lambda call, idx=idx, aid=current_agent.id: on_tool_event({"turn_index": idx, "agent_id": aid, "call": call}))
+                    (
+                        lambda call, idx=idx, aid=current_agent.id: on_tool_event(
+                            {
+                                "event_type": "tool_call",
+                                "turn_index": idx,
+                                "agent_id": aid,
+                                "call": call,
+                            }
+                        )
+                    )
                     if on_tool_event
                     else None
                 ),
@@ -218,19 +230,26 @@ class AgentsService:
                 grounded_context=agent_grounded_context,
             )
 
+            assistant_message = AgentMessage(
+                role="assistant",
+                content=response,
+                sender=current_agent.id,
+                timestamp=_utcnow(),
+            )
             self._append_message(
                 conversation.conversation_id,
-                AgentMessage(
-                    role="assistant",
-                    content=response,
-                    sender=current_agent.id,
-                    timestamp=_utcnow(),
-                ),
+                assistant_message,
+            )
+            self._remember_stage_tool_calls(
+                conversation_id=conversation.conversation_id,
+                message_timestamp=assistant_message.timestamp,
+                mcp_tool_calls=mcp_tool_calls,
             )
 
             turns.append(
                 AgentChatTurn(
                     agent_id=current_agent.id,
+                    received_input=stage_input,
                     response=response,
                     provider=current_agent.provider,
                     model=current_agent.model,
@@ -242,6 +261,19 @@ class AgentsService:
                     source_links=agent_grounded_context["source_links"],
                 )
             )
+
+            if on_tool_event:
+                on_tool_event(
+                    {
+                        "event_type": "step_completed",
+                        "turn_index": idx,
+                        "agent_id": current_agent.id,
+                        "stage_output": response,
+                        "next_stage_input": response,
+                        "message": f"Completed {current_agent.name}",
+                    }
+                )
+
             current_input = response
 
         final_turn = turns[-1]
@@ -254,6 +286,136 @@ class AgentsService:
             evidence_snippets=final_turn.evidence_snippets,
             source_links=final_turn.source_links,
             turns=turns,
+        )
+
+    def _resolve_resume_anchor(self, *, conversation: AgentConversation, user_id: str, payload: AgentChatRequest) -> int | None:
+        metadata = payload.metadata if isinstance(payload.metadata, dict) else {}
+        resume_requested = bool(metadata.get("resume_partial"))
+        if not resume_requested:
+            return None
+
+        if not payload.conversation_id:
+            return None
+
+        target = payload.message.strip()
+        if not target:
+            return None
+
+        for idx in range(len(conversation.messages) - 1, -1, -1):
+            msg = conversation.messages[idx]
+            if msg.role != "user":
+                continue
+            if str(msg.sender or "") != user_id:
+                continue
+            if msg.content.strip() != target:
+                continue
+            if any(item.role == "user" for item in conversation.messages[idx + 1 :]):
+                return None
+            return idx
+
+        return None
+
+    def _restore_completed_turns(
+        self,
+        *,
+        user: UserRecord,
+        conversation: AgentConversation,
+        chain: list[str],
+        grounded_context: dict[str, Any],
+        anchor_idx: int,
+        payload_message: str,
+    ) -> list[AgentChatTurn]:
+        turns: list[AgentChatTurn] = []
+        expected_idx = 0
+        tail = conversation.messages[anchor_idx + 1 :]
+
+        for msg in tail:
+            if msg.role != "assistant":
+                continue
+            if expected_idx >= len(chain):
+                break
+
+            expected_agent_id = chain[expected_idx]
+            if str(msg.sender or "") != expected_agent_id:
+                break
+
+            agent = self.get_agent_for_user(user=user, agent_id=expected_agent_id)
+            prior_response = turns[-1].response if turns else payload_message
+            mcp_tool_calls = self._recall_stage_tool_calls(
+                conversation_id=conversation.conversation_id,
+                message_timestamp=msg.timestamp,
+            )
+            stage_context = {
+                **grounded_context,
+                "mcp_tool_calls": mcp_tool_calls,
+                "mcp_tool_history": list(self._tool_history.get(conversation.conversation_id, []))[-20:],
+            }
+            thought_summary = self._build_thought_summary(
+                agent_id=expected_agent_id,
+                grounded_context=grounded_context,
+                mcp_tool_calls=mcp_tool_calls,
+            )
+            clinician_summary, patient_summary = self._split_outputs(
+                response=msg.content,
+                agent_id=expected_agent_id,
+                grounded_context=stage_context,
+            )
+
+            turns.append(
+                AgentChatTurn(
+                    agent_id=expected_agent_id,
+                    received_input=prior_response,
+                    response=msg.content,
+                    provider=agent.provider,
+                    model=agent.model,
+                    thought_summary=thought_summary,
+                    mcp_tool_calls=mcp_tool_calls,
+                    clinician_summary=clinician_summary,
+                    patient_summary=patient_summary,
+                    evidence_snippets=stage_context["evidence_snippets"],
+                    source_links=stage_context["source_links"],
+                )
+            )
+            expected_idx += 1
+
+        return turns
+
+    def _remember_stage_tool_calls(
+        self,
+        *,
+        conversation_id: str,
+        message_timestamp: datetime,
+        mcp_tool_calls: list[dict[str, Any]],
+    ) -> None:
+        cache_key = message_timestamp.isoformat()
+        with self._lock:
+            per_conversation = self._tool_calls_by_message.setdefault(conversation_id, {})
+            per_conversation[cache_key] = [dict(item) for item in mcp_tool_calls if isinstance(item, dict)]
+
+    def _recall_stage_tool_calls(self, *, conversation_id: str, message_timestamp: datetime) -> list[dict[str, Any]]:
+        cache_key = message_timestamp.isoformat()
+        per_conversation = self._tool_calls_by_message.get(conversation_id, {})
+        cached = per_conversation.get(cache_key, [])
+        return [dict(item) for item in cached if isinstance(item, dict)]
+
+    def _append_agent_handoff_message_if_missing(self, *, conversation_id: str, content: str, sender: str) -> None:
+        conversation = self._conversations.get(conversation_id)
+        if conversation is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+
+        if conversation.messages:
+            last = conversation.messages[-1]
+            if last.role == "agent" and str(last.sender or "") == sender and last.content == content:
+                return
+
+        self._append_message(
+            conversation_id,
+            AgentMessage(
+                role="agent",
+                content=content,
+                sender=sender,
+                timestamp=_utcnow(),
+            ),
         )
 
     async def handoff(self, *, user: UserRecord, payload: AgentHandoffRequest) -> AgentChatResponse:
@@ -286,6 +448,7 @@ class AgentsService:
             agent_id=to_agent.id,
             grounded_context=grounded_context,
             user_id=user.id,
+            previous_turns=[],
         )
         conversation_tool_history = list(self._tool_history.get(conversation.conversation_id, []))
         compact_rows = self._compact_tool_history_rows(mcp_tool_calls)
@@ -712,6 +875,83 @@ class AgentsService:
                 deduped.append(item)
         return deduped
 
+    def _collect_pipeline_search_terms(
+        self,
+        *,
+        grounded_context: dict[str, Any],
+        previous_turns: list[AgentChatTurn],
+    ) -> list[str]:
+        seed_terms: list[str] = []
+
+        for candidate in [
+            grounded_context.get("selected_query"),
+            grounded_context.get("canonical_name"),
+            grounded_context.get("query"),
+            grounded_context.get("original_query"),
+        ]:
+            token = str(candidate or "").strip()
+            if token:
+                seed_terms.append(token)
+
+        query_candidates = grounded_context.get("query_candidates", [])
+        if isinstance(query_candidates, list):
+            for item in query_candidates:
+                token = str(item).strip()
+                if token:
+                    seed_terms.append(token)
+
+        for turn in previous_turns:
+            if not isinstance(turn, AgentChatTurn):
+                continue
+            for call in turn.mcp_tool_calls:
+                if not isinstance(call, dict):
+                    continue
+                tool_name = str(call.get("tool_name") or "").strip()
+                if tool_name not in {"normalize_medication_name", "find_synonym_or_name_neighbors"}:
+                    continue
+
+                seed_terms.extend(self._extract_discovered_terms(call))
+
+                output = call.get("output")
+                if not isinstance(output, dict):
+                    continue
+                data = output.get("data")
+                if not isinstance(data, dict):
+                    continue
+
+                neighbors = data.get("synonym_or_name_neighbors", [])
+                if isinstance(neighbors, list):
+                    for neighbor in neighbors:
+                        if not isinstance(neighbor, dict):
+                            continue
+                        canonical = str(neighbor.get("canonical_name") or "").strip()
+                        if canonical:
+                            seed_terms.append(canonical)
+
+                source_results = data.get("source_results", [])
+                if isinstance(source_results, list):
+                    for source_result in source_results:
+                        if not isinstance(source_result, dict):
+                            continue
+                        items = source_result.get("items", [])
+                        if not isinstance(items, list):
+                            continue
+                        for item in items:
+                            if not isinstance(item, dict):
+                                continue
+                            canonical = str(item.get("canonical_name") or "").strip()
+                            if canonical:
+                                seed_terms.append(canonical)
+
+        expanded: list[str] = []
+        for term in seed_terms:
+            for candidate in self._medication_query_candidates(term):
+                normalized = str(candidate).strip()
+                if normalized and normalized not in expanded:
+                    expanded.append(normalized)
+
+        return expanded
+
     def _extract_medication_guess(self, text: str) -> str:
         cleaned = text.strip()
         if not cleaned:
@@ -780,6 +1020,8 @@ class AgentsService:
             return self._build_clinician_summary(response, grounded_context), response
         if agent_id == "safety-contraindication-agent":
             return response, self._build_patient_summary(response)
+        if agent_id in {"medication-answer-synthesis-agent", "medication-evidence-gathering-agent"}:
+            return response, self._build_patient_summary(response)
         if agent_id == "medication-info-agent":
             return response, self._build_patient_summary(response)
         return response, self._build_patient_summary(response)
@@ -803,6 +1045,7 @@ class AgentsService:
         agent_id: str,
         grounded_context: dict[str, Any],
         user_id: str,
+        previous_turns: list[AgentChatTurn],
         on_tool_call: Callable[[dict[str, Any]], None] | None = None,
     ) -> list[dict[str, Any]]:
         medication_name = str(grounded_context.get("canonical_name") or grounded_context.get("query") or "").strip()
@@ -827,126 +1070,37 @@ class AgentsService:
                 await asyncio.sleep(0)
             return call
 
-        if agent_id == "medication-info-agent":
+        if agent_id == "medication-normalization-agent":
             seed_candidates = [selected_query, medication_name, original_query, *(query_candidates if isinstance(query_candidates, list) else [])]
-            pending_terms: list[str] = []
+            candidates: list[str] = []
             for candidate in seed_candidates:
-                normalized = str(candidate).strip()
-                if normalized and normalized not in pending_terms:
-                    pending_terms.append(normalized)
+                token = str(candidate).strip()
+                if token and token not in candidates:
+                    candidates.append(token)
 
-            attempted_terms: list[str] = []
-            attempted_facts_terms: set[str] = set()
-            canonical_for_similar = medication_name
-            found_openfda = False
-
-            while pending_terms and len(attempted_terms) < 12:
-                attempt_name = pending_terms.pop(0)
-                if attempt_name in attempted_terms:
-                    continue
-                attempted_terms.append(attempt_name)
-
-                normalize_call = await _invoke("normalize_medication_name", {"name": attempt_name})
-
-                normalize_data = normalize_call.get("output", {}).get("data", {}) if isinstance(normalize_call.get("output"), dict) else {}
-                canonical_from_call = normalize_data.get("canonical_name") if isinstance(normalize_data, dict) else None
-                if isinstance(canonical_from_call, str) and canonical_from_call.strip():
-                    canonical_for_similar = canonical_from_call.strip()
-
-                facts_targets: list[str] = []
-                for seed in [attempt_name, canonical_for_similar]:
-                    for candidate in self._medication_query_candidates(str(seed or "")):
-                        if candidate and candidate not in facts_targets:
-                            facts_targets.append(candidate)
-
-                facts_targets = [candidate for candidate in facts_targets if candidate not in attempted_facts_terms]
-
-                if not facts_targets:
-                    if attempt_name not in attempted_facts_terms:
-                        facts_targets = [attempt_name]
-                    else:
-                        facts_targets = []
-
-                facts_call: dict[str, Any] | None = None
-                for facts_target in facts_targets[:6]:
-                    attempted_facts_terms.add(facts_target)
-                    trial_call = await _invoke("search_medication_facts", {"name": facts_target})
-                    trial_data = trial_call.get("output", {}).get("data", {}) if isinstance(trial_call.get("output"), dict) else {}
-                    trial_source = str(trial_data.get("source") or "").strip().lower() if isinstance(trial_data, dict) else ""
-
-                    if facts_call is None and trial_call.get("status") == "success":
-                        facts_call = trial_call
-
-                    if trial_source == "openfda":
-                        facts_call = trial_call
-                        break
-
-                if facts_call is None:
-                    fallback_term = attempt_name
-                    if fallback_term not in attempted_facts_terms:
-                        attempted_facts_terms.add(fallback_term)
-                        facts_call = await _invoke("search_medication_facts", {"name": fallback_term})
-                    else:
-                        facts_call = {
-                            "tool_name": "search_medication_facts",
-                            "status": "warning",
-                            "output": {"ok": False, "data": {}, "error": {"code": "SKIPPED_DUPLICATE", "message": "Skipped duplicate facts query"}},
-                        }
-
-                if canonical_for_similar:
-                    for candidate in self._medication_query_candidates(canonical_for_similar):
-                        if candidate not in attempted_terms and candidate not in pending_terms:
-                            pending_terms.insert(0, candidate)
-
-                facts_data = facts_call.get("output", {}).get("data", {}) if isinstance(facts_call.get("output"), dict) else {}
-                facts_source = str(facts_data.get("source") or "").strip().lower() if isinstance(facts_data, dict) else ""
-                indications = facts_data.get("indications", []) if isinstance(facts_data, dict) else []
-                evidence_rows = facts_data.get("evidence", []) if isinstance(facts_data, dict) else []
-                has_signal = bool(indications)
-                if not has_signal and isinstance(evidence_rows, list) and evidence_rows:
-                    first_evidence = evidence_rows[0] if isinstance(evidence_rows[0], dict) else {}
-                    snippets = first_evidence.get("snippets", []) if isinstance(first_evidence, dict) else []
-                    has_signal = bool(snippets)
-                if facts_source == "openfda":
-                    found_openfda = True
-
-                # Use response content to derive more specific follow-up queries.
-                if isinstance(canonical_for_similar, str) and canonical_for_similar:
-                    paren = re.findall(r"\(([^)]+)\)", canonical_for_similar)
-                    ingredient_hint = paren[0].strip() if paren else ""
-                    discovered_from_facts = [
-                        canonical_for_similar,
-                        ingredient_hint,
-                        *(facts_data.get("ingredients", []) if isinstance(facts_data, dict) else []),
-                        *(facts_data.get("aliases", []) if isinstance(facts_data, dict) else []),
-                    ]
-                    for discovered in discovered_from_facts:
-                        for candidate in self._medication_query_candidates(str(discovered)):
-                            if candidate not in attempted_terms and candidate not in pending_terms:
-                                pending_terms.append(candidate)
-
-                if facts_call.get("status") == "success" or normalize_call.get("status") == "success":
-                    # Stop only after we have an openFDA-backed hit; DailyMed may seed follow-up terms.
-                    if found_openfda and has_signal:
-                        await _invoke("find_similar_medications", {"name": canonical_for_similar or attempt_name})
-                        break
-                    if found_openfda:
-                        break
-
-                discovered_terms = [
-                    *self._extract_discovered_terms(normalize_call),
-                    *self._extract_discovered_terms(facts_call),
-                ]
-
-                for discovered in discovered_terms:
-                    for candidate in self._medication_query_candidates(discovered):
-                        if candidate not in attempted_terms and candidate not in pending_terms:
-                            pending_terms.append(candidate)
-        elif agent_id == "layman-translator-agent":
-            await _invoke(
-                "explain_for_patient",
-                {"medication_name": medication_name, "evidence_snippets": grounded_context.get("evidence_snippets", [])},
+            for attempt_name in candidates[:5]:
+                await _invoke("normalize_medication_name", {"name": attempt_name})
+                await _invoke("find_synonym_or_name_neighbors", {"name": attempt_name})
+        elif agent_id in {"medication-evidence-gathering-agent", "medication-info-agent"}:
+            search_terms = self._collect_pipeline_search_terms(
+                grounded_context=grounded_context,
+                previous_turns=previous_turns,
             )
+            if not search_terms and medication_name:
+                search_terms = self._medication_query_candidates(medication_name)
+
+            attempted: set[str] = set()
+            for term in search_terms[:6]:
+                normalized = str(term).strip()
+                if not normalized or normalized in attempted:
+                    continue
+                attempted.add(normalized)
+                await _invoke("search_medication_facts", {"name": normalized})
+                await _invoke("search_medication_indications", {"name": normalized})
+                await _invoke("search_medication_contraindications", {"name": normalized})
+        elif agent_id in {"medication-answer-synthesis-agent", "layman-translator-agent"}:
+            # These stages should only consume prior stage outputs and not issue new MCP tool calls.
+            pass
         elif agent_id == "safety-contraindication-agent":
             await _invoke("collect_missing_context", {"patient_context": patient_context})
             await _invoke("check_contraindications", {"medication_name": medication_name, "patient_context": patient_context})

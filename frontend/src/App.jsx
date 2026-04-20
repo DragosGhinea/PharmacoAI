@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkBreaks from 'remark-breaks';
 
 import { changeMyPassword, chatWithOrchestratorStream, getAgentConversation, getMyUser, loginUser } from './api/usersApi';
 import AdminUsersPanel from './components/AdminUsersPanel';
@@ -343,6 +344,7 @@ function PharmacistChatPage({ pharmacistSession }) {
   const [error, setError] = useState('');
   const [messageInfo, setMessageInfo] = useState('');
   const [isSending, setIsSending] = useState(false);
+  const [lastFailedRequest, setLastFailedRequest] = useState(null);
   const [conversationId, setConversationId] = useState('');
   const [chatTurns, setChatTurns] = useState([]);
   const [conversationMessages, setConversationMessages] = useState([]);
@@ -368,6 +370,7 @@ function PharmacistChatPage({ pharmacistSession }) {
           provider: 'gemini',
           model: 'streaming',
           thought_summary: 'Running MCP tools...',
+          step_status: 'running',
           mcp_tool_calls: [],
           response: '',
           clinician_summary: '',
@@ -382,7 +385,54 @@ function PharmacistChatPage({ pharmacistSession }) {
       next[turnIndex] = {
         ...existingTurn,
         agent_id: existingTurn.agent_id || agentId,
+        step_status: existingTurn.step_status || 'running',
         mcp_tool_calls: [...existingCalls, call],
+      };
+      return next;
+    });
+  }
+
+  function upsertStreamedStep(event, status) {
+    const turnIndex = Number(event?.turn_index);
+    const agentId = String(event?.agent_id || 'orchestrator-agent');
+    const message = String(event?.message || '');
+    const stageInput = typeof event?.stage_input === 'string' ? event.stage_input : '';
+    const stageOutput = typeof event?.stage_output === 'string' ? event.stage_output : '';
+    const nextStageInput = typeof event?.next_stage_input === 'string' ? event.next_stage_input : '';
+    if (!Number.isInteger(turnIndex)) {
+      return;
+    }
+
+    setChatTurns((current) => {
+      const next = [...current];
+      while (next.length <= turnIndex) {
+        next.push({
+          agent_id: agentId,
+          provider: 'gemini',
+          model: 'streaming',
+          thought_summary: message || 'Pipeline stage update',
+          step_status: status,
+          received_input: stageInput,
+          stage_output: stageOutput,
+          next_stage_input: nextStageInput,
+          mcp_tool_calls: [],
+          response: '',
+          clinician_summary: '',
+          patient_summary: '',
+          evidence_snippets: [],
+          source_links: [],
+        });
+      }
+
+      const existingTurn = next[turnIndex] || {};
+      next[turnIndex] = {
+        ...existingTurn,
+        agent_id: existingTurn.agent_id || agentId,
+        thought_summary: message || existingTurn.thought_summary || 'Pipeline stage update',
+        step_status: status,
+        received_input: stageInput || existingTurn.received_input || '',
+        stage_output: stageOutput || existingTurn.stage_output || '',
+        next_stage_input: nextStageInput || existingTurn.next_stage_input || '',
       };
       return next;
     });
@@ -413,33 +463,62 @@ function PharmacistChatPage({ pharmacistSession }) {
     };
   }, [pharmacistSession.userId]);
 
-  async function submitQuestion(event) {
-    event.preventDefault();
-    setError('');
-    setMessageInfo('');
-
-    if (!question.trim()) {
+  async function runAgentRequest({ promptText, conversationIdOverride, optimisticUserMessage, resumePartial }) {
+    const trimmedQuestion = String(promptText || '').trim();
+    if (!trimmedQuestion) {
       return;
     }
 
+    const targetConversationId = typeof conversationIdOverride === 'string' ? conversationIdOverride : conversationId;
+
+    setError('');
+    setMessageInfo('');
+    setChatTurns([]);
+
+    if (optimisticUserMessage) {
+      setConversationMessages((current) => [
+        ...current,
+        {
+          role: 'user',
+          sender: 'user',
+          content: trimmedQuestion,
+          timestamp: new Date().toISOString(),
+        },
+      ]);
+      setQuestion('');
+    }
+
+    const failedRequestContext = {
+      message: trimmedQuestion,
+      conversationId: targetConversationId || '',
+    };
+
     setIsSending(true);
     try {
-      setChatTurns([]);
       const response = await chatWithOrchestratorStream(
         pharmacistSession.userId,
         {
-        message: question.trim(),
-        conversation_id: conversationId || undefined,
-        metadata: {},
+          message: trimmedQuestion,
+          conversation_id: targetConversationId || undefined,
+          metadata: resumePartial ? { resume_partial: true } : {},
         },
         (event) => {
           if (event?.type === 'tool_call') {
             appendStreamedToolCall(event);
+            return;
+          }
+          if (event?.type === 'step_started') {
+            upsertStreamedStep(event, 'running');
+            return;
+          }
+          if (event?.type === 'step_completed') {
+            upsertStreamedStep(event, 'completed');
           }
         }
       );
 
-      setConversationId(response.conversation_id || conversationId);
+      const resolvedConversationId = response.conversation_id || targetConversationId || '';
+      setConversationId(resolvedConversationId);
       setChatTurns(response.turns || []);
       setMessageInfo(`Conversation ID: ${response.conversation_id}`);
       const turnList = response.turns || [];
@@ -448,19 +527,23 @@ function PharmacistChatPage({ pharmacistSession }) {
         setConversationHistory((current) =>
           upsertConversationHistoryEntry(current, {
             conversationId: response.conversation_id,
-            title: question.trim().slice(0, 80) || 'Untitled conversation',
+            title: trimmedQuestion.slice(0, 80) || 'Untitled conversation',
             updatedAt: new Date().toISOString(),
             lastAgent: String(lastTurn?.agent_id || 'orchestrator-agent'),
           })
         );
-        const conversationResponse = await getAgentConversation(pharmacistSession.userId, response.conversation_id);
+      }
+
+      if (resolvedConversationId) {
+        const conversationResponse = await getAgentConversation(pharmacistSession.userId, resolvedConversationId);
         setConversationMessages(conversationResponse.messages || []);
       }
 
       const refreshedProfile = await getMyUser(pharmacistSession.userId);
       setUserProfile(refreshedProfile);
-      setQuestion('');
+      setLastFailedRequest(null);
     } catch (sendError) {
+      setLastFailedRequest(failedRequestContext);
       if (sendError instanceof Error) {
         setError(sendError.message);
       } else {
@@ -469,6 +552,31 @@ function PharmacistChatPage({ pharmacistSession }) {
     } finally {
       setIsSending(false);
     }
+  }
+
+  async function submitQuestion(event) {
+    event.preventDefault();
+    if (isSending) {
+      return;
+    }
+    await runAgentRequest({
+      promptText: question,
+      optimisticUserMessage: true,
+      resumePartial: false,
+    });
+  }
+
+  async function resumeLastFailedRequest() {
+    if (!lastFailedRequest || isSending) {
+      return;
+    }
+
+    await runAgentRequest({
+      promptText: lastFailedRequest.message,
+      conversationIdOverride: lastFailedRequest.conversationId,
+      optimisticUserMessage: false,
+      resumePartial: true,
+    });
   }
 
   const tierLabel = userProfile?.tier ?? pharmacistSession.tier;
@@ -549,20 +657,39 @@ function PharmacistChatPage({ pharmacistSession }) {
     return message.role;
   }
 
+  function normalizeMarkdownContent(value) {
+    if (typeof value !== 'string') {
+      return '';
+    }
+
+    let normalized = value.replace(/\r\n/g, '\n');
+    if (normalized.includes('\\n')) {
+      normalized = normalized.replace(/\\n/g, '\n');
+    }
+    return normalized;
+  }
+
   const hasLiveTrace = chatTurns.some((turn) => Array.isArray(turn?.mcp_tool_calls) && turn.mcp_tool_calls.length > 0);
   const finalTraceTurn = chatTurns.length > 0 ? chatTurns[chatTurns.length - 1] : null;
-  const finalTraceResponse = String(finalTraceTurn?.response || '').trim();
   const displayMessages = (() => {
-    if (!finalTraceResponse || conversationMessages.length === 0) {
-      return conversationMessages;
-    }
-    const candidate = conversationMessages[conversationMessages.length - 1];
-    if (candidate?.role === 'assistant' && String(candidate?.content || '').trim() === finalTraceResponse) {
-      return conversationMessages.slice(0, -1);
-    }
-    return conversationMessages;
+    const visibleAssistantSenders = new Set([
+      'layman-translator-agent',
+      'medication-answer-synthesis-agent',
+      'orchestrator-agent',
+    ]);
+    return conversationMessages.filter((item, idx, arr) => {
+      if (item?.role !== 'assistant') {
+        return true;
+      }
+      const sender = String(item?.sender || '').trim();
+      if (!sender) {
+        return idx === arr.length - 1;
+      }
+      return visibleAssistantSenders.has(sender);
+    });
   })();
   const hasMessages = displayMessages.length > 0;
+  const hasStartedConversation = Boolean(conversationId || hasMessages || isSending);
 
   function compactQueryFromInput(input) {
     if (!input || typeof input !== 'object') {
@@ -577,32 +704,142 @@ function PharmacistChatPage({ pharmacistSession }) {
     return '';
   }
 
-  function renderComposer(extraClass = '') {
+  function renderTurnCard(turn, turnIndex) {
     return (
-      <form className={`space-y-4 ${extraClass}`.trim()} onSubmit={submitQuestion}>
-        <div className="rounded-xl border border-outline-variant/40 bg-surface-container-low p-3">
-          <p className="text-xs text-on-surface-variant">
-            The orchestrator automatically selects and chains agents based on your query. No manual selection is required.
-          </p>
+      <div
+        key={`mcp-turn-${turn.agent_id || 'agent'}-${turnIndex}`}
+        className="mr-auto w-full max-w-[92%] rounded-2xl border border-secondary/40 bg-secondary/5 p-4"
+      >
+        <div className="flex items-center gap-2 mb-3">
+          <span className="px-2 py-1 rounded-md text-xs font-semibold bg-secondary text-white">MCP Activity</span>
+          <span className="text-xs text-on-surface-variant">Live tool orchestration trace</span>
         </div>
 
+        <div className="rounded-xl border border-outline-variant/40 bg-surface p-3">
+          <div className="flex flex-wrap items-center gap-2 mb-2">
+            <p className="text-xs font-semibold text-primary">{turn.agent_id || 'agent'}</p>
+            {turn?.step_status === 'running' && (
+              <span className="px-2 py-1 rounded-md text-[11px] bg-secondary/15 text-secondary">running</span>
+            )}
+            {turn?.step_status === 'completed' && (
+              <span className="px-2 py-1 rounded-md text-[11px] bg-secondary-container/60 text-secondary">completed</span>
+            )}
+          </div>
+          {turn?.thought_summary && (
+            <p className="text-xs text-on-surface-variant mb-2">{turn.thought_summary}</p>
+          )}
+          {String(turn?.received_input || '').trim() && (
+            <details className="mb-2 rounded-lg border border-outline-variant/40 bg-surface-container-low p-2">
+              <summary className="cursor-pointer list-none text-xs font-semibold text-on-surface-variant">
+                Input received by this phase
+              </summary>
+              <pre className="mt-2 text-xs whitespace-pre-wrap break-words text-on-surface-variant bg-surface rounded-lg p-2 border border-outline-variant/40">
+                {String(turn.received_input)}
+              </pre>
+            </details>
+          )}
+          {Array.isArray(turn.mcp_tool_calls) && turn.mcp_tool_calls.length > 0 ? (
+            <div className="space-y-2">
+              {turn.mcp_tool_calls.map((call, toolIndex) => {
+                const compactQuery = compactQueryFromInput(call?.input);
+                return (
+                  <details key={`${call?.tool_name || 'tool'}-${toolIndex}`} className="rounded-lg border border-outline-variant/40 bg-surface-container-low p-2">
+                    <summary className="cursor-pointer list-none">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="px-2 py-1 rounded-md text-xs bg-surface text-on-surface-variant border border-outline-variant/50">{call?.tool_name || 'tool'}</span>
+                        <span
+                          className={
+                            call?.status === 'success'
+                              ? 'px-2 py-1 rounded-md text-xs bg-secondary/15 text-secondary'
+                              : call?.status === 'warning'
+                                ? 'px-2 py-1 rounded-md text-xs bg-tertiary-fixed/30 text-primary'
+                                : 'px-2 py-1 rounded-md text-xs bg-error/15 text-error'
+                          }
+                        >
+                          {call?.status || 'unknown'}
+                        </span>
+                        {compactQuery && <span className="text-xs text-on-surface-variant truncate max-w-[20rem]">query: {compactQuery}</span>}
+                      </div>
+                    </summary>
+                    <div className="mt-2 space-y-2">
+                      <pre className="text-xs whitespace-pre-wrap break-words text-on-surface-variant bg-surface rounded-lg p-2 border border-outline-variant/40">
+                        {JSON.stringify(call?.input || {}, null, 2)}
+                      </pre>
+                      <pre className="text-xs whitespace-pre-wrap break-words text-on-surface-variant bg-surface rounded-lg p-2 border border-outline-variant/40">
+                        {call?.output ? JSON.stringify(call.output, null, 2) : (call?.output_summary || 'No output')}
+                      </pre>
+                    </div>
+                  </details>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="text-xs text-on-surface-variant">Waiting for MCP calls...</p>
+          )}
+          {String(turn?.response || turn?.stage_output || '').trim() && (
+            <details className="mt-2 rounded-lg border border-outline-variant/40 bg-surface-container-low p-2">
+              <summary className="cursor-pointer list-none text-xs font-semibold text-on-surface-variant">
+                Output produced by this phase
+              </summary>
+              <pre className="mt-2 text-xs whitespace-pre-wrap break-words text-on-surface-variant bg-surface rounded-lg p-2 border border-outline-variant/40">
+                {String(turn.response || turn.stage_output)}
+              </pre>
+            </details>
+          )}
+          {String(turn?.next_stage_input || turn?.response || '').trim() && (
+            <details className="mt-2 rounded-lg border border-outline-variant/40 bg-surface-container-low p-2">
+              <summary className="cursor-pointer list-none text-xs font-semibold text-on-surface-variant">
+                Input sent to next phase
+              </summary>
+              <pre className="mt-2 text-xs whitespace-pre-wrap break-words text-on-surface-variant bg-surface rounded-lg p-2 border border-outline-variant/40">
+                {String(turn.next_stage_input || turn.response)}
+              </pre>
+            </details>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  function renderComposer(extraClass = '') {
+    return (
+      <form className={`space-y-1.5 ${extraClass}`.trim()} onSubmit={submitQuestion}>
+        {!hasStartedConversation && (
+          <div className="rounded-lg border border-outline-variant/40 bg-surface-container-low p-1.5">
+            <p className="text-[10px] text-on-surface-variant">
+              The orchestrator automatically selects and chains agents based on your query.
+            </p>
+          </div>
+        )}
+
         <textarea
-          className="w-full min-h-36 rounded-2xl border-outline-variant/60 bg-surface px-4 py-3 text-sm"
+          className="w-full min-h-16 rounded-lg border-outline-variant/60 bg-surface px-2.5 py-1.5 text-xs"
           placeholder="Example: Ce stii despre metamizol? verifica interactiunile si explica pe intelesul pacientului."
           value={question}
           onChange={(event) => setQuestion(event.target.value)}
+          rows={2}
         />
 
-        <div className="flex flex-wrap gap-3">
+        <div className="flex flex-wrap gap-2">
           <button
-            className="bg-primary-container text-white px-6 py-3 rounded-2xl text-sm font-bold shadow-lg shadow-primary-container/20 hover:scale-[0.99] transition-transform disabled:opacity-70"
+            className="bg-primary-container text-white px-3 py-1.5 rounded-lg text-[11px] font-bold shadow-lg shadow-primary-container/20 hover:scale-[0.99] transition-transform disabled:opacity-70"
             type="submit"
             disabled={isSending || isLimitReached}
           >
             {isSending ? 'Sending...' : 'Ask Agent'}
           </button>
+          {lastFailedRequest && (
+            <button
+              className="px-3 py-1.5 rounded-lg text-[11px] font-bold border border-secondary/40 bg-secondary/10 text-secondary disabled:opacity-70"
+              type="button"
+              onClick={resumeLastFailedRequest}
+              disabled={isSending}
+            >
+              Resume Last Request
+            </button>
+          )}
           <button
-            className="px-6 py-3 rounded-2xl text-sm font-bold border border-outline-variant/60 bg-surface"
+            className="px-3 py-1.5 rounded-lg text-[11px] font-bold border border-outline-variant/60 bg-surface"
             type="button"
             onClick={reloadConversation}
             disabled={!conversationId}
@@ -615,10 +852,10 @@ function PharmacistChatPage({ pharmacistSession }) {
   }
 
   return (
-    <main>
-      <section className="px-6 py-12 bg-surface-container-low min-h-[70vh]">
-        <div className="max-w-7xl mx-auto grid lg:grid-cols-12 gap-6">
-          <aside className="lg:col-span-3 bg-surface-container-lowest rounded-3xl p-6 border border-outline-variant/40 shadow-sm">
+    <main className="bg-surface-container-low min-h-[calc(100vh-80px)]">
+      <section className="w-full h-[calc(100vh-80px)]">
+        <div className="w-full h-full flex flex-col lg:flex-row gap-0">
+          <aside className="lg:w-80 w-full bg-surface-container-lowest p-6 border-b lg:border-b-0 lg:border-r border-outline-variant/40 overflow-y-auto">
             <div className="flex items-start justify-between gap-3 mb-4">
               <div>
                 <p className="text-xs uppercase font-bold tracking-[0.2em] text-secondary mb-1">Chat History</p>
@@ -672,131 +909,85 @@ function PharmacistChatPage({ pharmacistSession }) {
             </a>
           </aside>
 
-          <div className="lg:col-span-9 bg-surface-container-lowest rounded-3xl p-8 border border-outline-variant/40 shadow-sm">
-            <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
-              <div>
-                <p className="text-xs uppercase font-bold tracking-[0.2em] text-secondary mb-1">Dedicated Chat Route</p>
-                <h3 className="text-3xl text-primary font-bold">Orchestrated Agent Chat</h3>
+          <div className="flex-1 min-w-0 bg-surface-container-lowest p-3 lg:p-4 border-l-0 border-outline-variant/40 flex flex-col">
+            {!hasStartedConversation && (
+              <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+                <div>
+                  <p className="text-xs uppercase font-bold tracking-[0.2em] text-secondary mb-1">Dedicated Chat Route</p>
+                  <h3 className="text-2xl text-primary font-bold">Orchestrated Agent Chat</h3>
+                </div>
+                <div className="rounded-lg border border-outline-variant/40 bg-surface px-2 py-1.5">
+                  <p className="text-[10px] uppercase tracking-wider text-on-surface-variant">Conversation</p>
+                  <p className="text-[11px] font-semibold text-primary break-all">{conversationId || 'Not started'}</p>
+                </div>
               </div>
-              <div className="rounded-xl border border-outline-variant/40 bg-surface px-3 py-2">
-                <p className="text-[11px] uppercase tracking-wider text-on-surface-variant">Conversation</p>
-                <p className="text-xs font-semibold text-primary break-all">{conversationId || 'Not started'}</p>
-              </div>
-            </div>
+            )}
 
-            {!hasMessages && renderComposer()}
-
-            {messageInfo && <p className="mt-4 text-sm font-semibold text-secondary">{messageInfo}</p>}
+            {messageInfo && !hasStartedConversation && <p className="mt-4 text-sm font-semibold text-secondary">{messageInfo}</p>}
             {error && <p className="mt-2 text-sm font-semibold text-error">{error}</p>}
 
-            <div className="mt-8 space-y-4 max-h-[44rem] overflow-y-auto pr-1">
+            <div className="mt-2 flex-1 space-y-3 overflow-y-auto min-h-0">
               {displayMessages.length === 0 && !hasLiveTrace && !isSending ? (
                 <div className="rounded-2xl border border-outline-variant/50 bg-surface p-4 text-sm text-on-surface-variant">
                   No chat turns yet. Send a message to start a tracked conversation.
                 </div>
               ) : (
-                displayMessages.map((message, index) => (
-                  <div
-                    key={`${message.timestamp || index}-${index}`}
-                    className={
-                      message.role === 'user'
-                        ? 'ml-auto max-w-[85%] rounded-2xl border border-secondary/40 bg-secondary/10 p-4'
-                        : 'mr-auto max-w-[90%] rounded-2xl border border-outline-variant/40 bg-surface p-4'
+                (() => {
+                  const timeline = [];
+                  let assistantTurnIndex = 0;
+
+                  displayMessages.forEach((message, index) => {
+                    if (message.role === 'assistant' && assistantTurnIndex < chatTurns.length) {
+                      timeline.push(renderTurnCard(chatTurns[assistantTurnIndex], assistantTurnIndex));
+                      assistantTurnIndex += 1;
                     }
-                  >
-                    <div className="flex items-center gap-2 mb-2">
-                      <span className={`px-2 py-1 rounded-md text-xs font-semibold ${roleBadgeClass(message.role)}`}>
-                        {roleLabel(message)}
-                      </span>
-                      {message.timestamp && (
-                        <span className="text-[11px] text-on-surface-variant">{new Date(message.timestamp).toLocaleTimeString()}</span>
-                      )}
-                    </div>
-                    <div className="prose prose-sm max-w-none text-on-surface-variant">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content || ''}</ReactMarkdown>
-                    </div>
-                  </div>
-                ))
+
+                    timeline.push(
+                      <div
+                        key={`${message.timestamp || index}-${index}`}
+                        className={
+                          message.role === 'user'
+                            ? 'ml-auto max-w-[85%] rounded-2xl border border-secondary/40 bg-secondary/10 p-4'
+                            : 'mr-auto max-w-[90%] rounded-2xl border border-outline-variant/40 bg-surface p-4'
+                        }
+                      >
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className={`px-2 py-1 rounded-md text-xs font-semibold ${roleBadgeClass(message.role)}`}>
+                            {roleLabel(message)}
+                          </span>
+                          {message.timestamp && (
+                            <span className="text-[11px] text-on-surface-variant">{new Date(message.timestamp).toLocaleTimeString()}</span>
+                          )}
+                        </div>
+                        <div className="prose prose-sm max-w-none text-on-surface-variant">
+                          <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
+                            {normalizeMarkdownContent(message.content || '')}
+                          </ReactMarkdown>
+                        </div>
+                      </div>
+                    );
+                  });
+
+                  while (assistantTurnIndex < chatTurns.length) {
+                    timeline.push(renderTurnCard(chatTurns[assistantTurnIndex], assistantTurnIndex));
+                    assistantTurnIndex += 1;
+                  }
+
+                  return timeline;
+                })()
               )}
 
-              {(hasLiveTrace || isSending) && (
+              {isSending && (
                 <div className="mr-auto w-full max-w-[92%] rounded-2xl border border-secondary/40 bg-secondary/5 p-4">
-                  <div className="flex items-center gap-2 mb-3">
-                    <span className="px-2 py-1 rounded-md text-xs font-semibold bg-secondary text-white">MCP Activity</span>
-                    <span className="text-xs text-on-surface-variant">Live tool orchestration trace</span>
+                  <div className="flex items-center gap-2 text-sm text-on-surface-variant">
+                    <span className="inline-block h-4 w-4 rounded-full border-2 border-secondary/30 border-t-secondary animate-spin" />
+                    <span>Running tools and composing answer...</span>
                   </div>
-
-                  <div className="space-y-3">
-                    {chatTurns.map((turn, turnIndex) => (
-                      <div key={`${turn.agent_id || 'agent'}-${turnIndex}`} className="rounded-xl border border-outline-variant/40 bg-surface p-3">
-                        <p className="text-xs font-semibold text-primary mb-2">{turn.agent_id || 'agent'}</p>
-                        {Array.isArray(turn.mcp_tool_calls) && turn.mcp_tool_calls.length > 0 ? (
-                          <div className="space-y-2">
-                            {turn.mcp_tool_calls.map((call, toolIndex) => {
-                              const compactQuery = compactQueryFromInput(call?.input);
-                              return (
-                                <details key={`${call?.tool_name || 'tool'}-${toolIndex}`} className="rounded-lg border border-outline-variant/40 bg-surface-container-low p-2">
-                                  <summary className="cursor-pointer list-none">
-                                    <div className="flex flex-wrap items-center gap-2">
-                                      <span className="px-2 py-1 rounded-md text-xs bg-surface text-on-surface-variant border border-outline-variant/50">{call?.tool_name || 'tool'}</span>
-                                      <span
-                                        className={
-                                          call?.status === 'success'
-                                            ? 'px-2 py-1 rounded-md text-xs bg-secondary/15 text-secondary'
-                                            : call?.status === 'warning'
-                                              ? 'px-2 py-1 rounded-md text-xs bg-tertiary-fixed/30 text-primary'
-                                              : 'px-2 py-1 rounded-md text-xs bg-error/15 text-error'
-                                        }
-                                      >
-                                        {call?.status || 'unknown'}
-                                      </span>
-                                      {compactQuery && <span className="text-xs text-on-surface-variant truncate max-w-[20rem]">query: {compactQuery}</span>}
-                                    </div>
-                                  </summary>
-                                  <div className="mt-2 space-y-2">
-                                    <pre className="text-xs whitespace-pre-wrap break-words text-on-surface-variant bg-surface rounded-lg p-2 border border-outline-variant/40">
-                                      {JSON.stringify(call?.input || {}, null, 2)}
-                                    </pre>
-                                    <pre className="text-xs whitespace-pre-wrap break-words text-on-surface-variant bg-surface rounded-lg p-2 border border-outline-variant/40">
-                                      {call?.output ? JSON.stringify(call.output, null, 2) : (call?.output_summary || 'No output')}
-                                    </pre>
-                                  </div>
-                                </details>
-                              );
-                            })}
-                          </div>
-                        ) : (
-                          <p className="text-xs text-on-surface-variant">Waiting for MCP calls...</p>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-
-                  {isSending && (
-                    <div className="mt-4 flex items-center gap-2 text-sm text-on-surface-variant">
-                      <span className="inline-block h-4 w-4 rounded-full border-2 border-secondary/30 border-t-secondary animate-spin" />
-                      <span>Running tools and composing answer...</span>
-                    </div>
-                  )}
-
-                  {!isSending && finalTraceResponse && (
-                    <div className="mt-4 rounded-xl border border-outline-variant/40 bg-surface p-3">
-                      <div className="flex items-center gap-2 mb-2">
-                        <span className="px-2 py-1 rounded-md text-xs font-semibold bg-primary-container text-white">
-                          {finalTraceTurn?.agent_id || 'assistant'}
-                        </span>
-                        <span className="text-xs text-on-surface-variant">Final response</span>
-                      </div>
-                      <div className="prose prose-sm max-w-none text-on-surface-variant">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{finalTraceResponse}</ReactMarkdown>
-                      </div>
-                    </div>
-                  )}
                 </div>
               )}
             </div>
 
-            {hasMessages && renderComposer('mt-8')}
+            {renderComposer('mt-1.5')}
           </div>
         </div>
       </section>
