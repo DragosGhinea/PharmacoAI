@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import json
 import os
+import unicodedata
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from ..env_loader import load_root_env
+
+load_root_env()
+
 from .audit import log_audit, setup_audit_logger
-from .data import MEDICATIONS, get_record_by_any_name, list_similar_medications
+from .data import normalize_token
 from .external_data import fetch_openfda_facts, fetch_openfda_related_medications
 from .rate_limit import build_default_limiter
 from .safety import collect_context_gaps, warning_from_context_gaps
@@ -28,49 +33,47 @@ mcp = FastMCP(
 )
 
 
-def _payload_from_record(record: Any) -> dict[str, Any]:
-    return {
-        "source": "mock",
-        "drug_id": record.drug_id,
-        "canonical_name": record.canonical_name,
-        "aliases": list(record.aliases),
-        "ingredients": list(record.ingredients),
-        "indications": list(record.indications),
-        "dosage_form": record.dosage_form,
-        "pharmacologic_class": record.pharmacologic_class,
-        "contraindications": list(record.contraindications),
-        "interactions": record.interactions,
-        "patient_leaflet": record.patient_leaflet,
-        "evidence": {key: list(value) for key, value in record.evidence.items()},
-    }
+def _name_candidates(name: str) -> list[str]:
+    base = normalize_token(name)
+    if not base:
+        return []
+    ascii_base = unicodedata.normalize("NFKD", base).encode("ascii", "ignore").decode("ascii")
+    variants = [
+        base,
+        ascii_base,
+        base.replace(" sodic", " sodium").replace(" de sodiu", " sodium"),
+        ascii_base.replace(" sodic", " sodium").replace(" de sodiu", " sodium"),
+        base.replace(" sodic", "").replace(" de sodiu", "").strip(),
+    ]
+    deduped: list[str] = []
+    for item in variants:
+        token = normalize_token(item)
+        if token and token not in deduped:
+            deduped.append(token)
+    return deduped
 
 
-def _resolve_by_name(name: str) -> tuple[dict[str, Any] | None, float, str | None]:
-    if USE_EXTERNAL_DATA:
-        external = fetch_openfda_facts(name)
+def _resolve_by_name(name: str) -> tuple[dict[str, Any] | None, float, str | None, list[str]]:
+    if not USE_EXTERNAL_DATA:
+        return None, 0.0, None, []
+
+    for candidate in _name_candidates(name):
+        external = fetch_openfda_facts(candidate)
         if external is not None:
-            return external, 0.88, name.strip().lower()
+            return external, 0.88, candidate, []
 
-    record, confidence, matched_on = get_record_by_any_name(name)
-    if record is None:
-        return None, 0.0, None
-    return _payload_from_record(record), confidence, matched_on
+    return None, 0.0, None, []
 
 
 def _resolve_by_id(drug_id: str) -> dict[str, Any] | None:
-    record = MEDICATIONS.get(drug_id)
-    if record is not None:
-        return _payload_from_record(record)
-
-    # Resource requests may pass canonical names or tokenized IDs.
-    by_name, _, _ = _resolve_by_name(drug_id.replace("-", " "))
+    by_name, _, _, _ = _resolve_by_name(drug_id.replace("-", " "))
     if by_name is not None:
         return by_name
 
-    if USE_EXTERNAL_DATA:
-        return fetch_openfda_facts(drug_id)
+    if not USE_EXTERNAL_DATA:
+        return None
 
-    return None
+    return fetch_openfda_facts(drug_id)
 
 
 def _envelope(
@@ -124,8 +127,20 @@ def normalize_medication_name(name: str, caller_id: str = "anonymous") -> dict[s
     if blocked:
         return blocked
 
-    payload, confidence, matched_on = _resolve_by_name(name)
+    payload, confidence, matched_on, ambiguities = _resolve_by_name(name)
     if payload is None:
+        if ambiguities:
+            result = _envelope(
+                ok=False,
+                risk_tier="informational",
+                error={
+                    "code": "NEEDS_CLARIFICATION",
+                    "message": "Medication name is ambiguous. Please choose one of the suggested options.",
+                },
+                data={"suggestions": ambiguities[:5]},
+            )
+            log_audit("normalize_medication_name", caller_id, "warn", "informational")
+            return result
         result = _envelope(
             ok=False,
             risk_tier="informational",
@@ -143,7 +158,7 @@ def normalize_medication_name(name: str, caller_id: str = "anonymous") -> dict[s
         "matched_on": matched_on,
         "aliases": payload.get("aliases", []),
         "confidence": confidence,
-        "source": payload.get("source", "mock"),
+        "source": payload.get("source", "openfda"),
         "evidence": [
             {
                 "uri": f"drug://label/{payload['drug_id']}",
@@ -168,8 +183,20 @@ def search_medication_facts(name: str, caller_id: str = "anonymous") -> dict[str
     if blocked:
         return blocked
 
-    payload, _, _ = _resolve_by_name(name)
+    payload, _, _, ambiguities = _resolve_by_name(name)
     if payload is None:
+        if ambiguities:
+            result = _envelope(
+                ok=False,
+                risk_tier="informational",
+                error={
+                    "code": "NEEDS_CLARIFICATION",
+                    "message": "Medication name is ambiguous. Please clarify before retrieving facts.",
+                },
+                data={"suggestions": ambiguities[:5]},
+            )
+            log_audit("search_medication_facts", caller_id, "warn", "informational")
+            return result
         result = _envelope(
             ok=False,
             risk_tier="informational",
@@ -185,7 +212,7 @@ def search_medication_facts(name: str, caller_id: str = "anonymous") -> dict[str
         "indications": payload.get("indications", []),
         "dosage_form": payload.get("dosage_form", "unknown"),
         "pharmacologic_class": payload.get("pharmacologic_class", "unknown"),
-        "source": payload.get("source", "mock"),
+        "source": payload.get("source", "openfda"),
         "evidence": [
             {
                 "uri": f"drug://label/{payload['drug_id']}",
@@ -209,57 +236,38 @@ def find_similar_medications(name: str, caller_id: str = "anonymous") -> dict[st
     if blocked:
         return blocked
 
-    record, _, _ = get_record_by_any_name(name)
-    if record is None:
+    payload, _, _, _ = _resolve_by_name(name)
+    if payload is None:
         result = _envelope(
             ok=False,
             risk_tier="informational",
             error={
                 "code": "NOT_FOUND",
-                "message": "No source medication found in local similarity graph.",
+                "message": "No source medication found in external sources.",
             },
         )
         log_audit("find_similar_medications", caller_id, "error", "informational")
         return result
 
-    candidates = list_similar_medications(record)
+    target_name = str(payload.get("canonical_name") or name).strip()
+    external_alternatives: list[dict[str, Any]] = []
+    if USE_EXTERNAL_DATA:
+        external_alternatives = fetch_openfda_related_medications(target_name, limit=5)
+
     data = {
-        "drug_id": record.drug_id,
-        "canonical_name": record.canonical_name,
-        "alternatives": [
-            {
-                "drug_id": candidate.drug_id,
-                "canonical_name": candidate.canonical_name,
-                "pharmacologic_class": candidate.pharmacologic_class,
-                "ingredients": list(candidate.ingredients),
-            }
-            for candidate in candidates
-        ],
+        "drug_id": payload["drug_id"],
+        "canonical_name": payload["canonical_name"],
+        "alternatives": external_alternatives,
         "evidence": [
             {
-                "uri": f"drug://classes/{record.drug_id}",
+                "uri": f"drug://classes/{payload['drug_id']}",
                 "snippets": [
-                    "Alternatives are grouped by class or active ingredient overlap.",
+                    "Alternatives are retrieved from external source neighborhood search.",
                 ],
             }
         ],
-        "source": "mock",
+        "source": "openfda",
     }
-
-    external_alternatives: list[dict[str, Any]] = []
-    if USE_EXTERNAL_DATA:
-        external_alternatives = fetch_openfda_related_medications(record.canonical_name, limit=5)
-        if external_alternatives:
-            data["alternatives"] = data["alternatives"] + external_alternatives
-            data["source"] = "mock+openfda"
-            data["evidence"].append(
-                {
-                    "uri": f"drug://classes/{record.drug_id}",
-                    "snippets": [
-                        "External alternatives enriched from openFDA neighborhood search.",
-                    ],
-                }
-            )
 
     result = _envelope(ok=True, risk_tier="informational", data=data)
     log_audit("find_similar_medications", caller_id, "success", "informational")
@@ -306,7 +314,7 @@ def check_contraindications(
     if blocked:
         return blocked
 
-    payload, _, _ = _resolve_by_name(medication_name)
+    payload, _, _, _ = _resolve_by_name(medication_name)
     if payload is None:
         result = _envelope(
             ok=False,
@@ -332,7 +340,7 @@ def check_contraindications(
         "canonical_name": payload["canonical_name"],
         "contraindications": payload.get("contraindications", []),
         "red_flags": red_flags,
-        "source": payload.get("source", "mock"),
+        "source": payload.get("source", "openfda"),
         "evidence": [
             {
                 "uri": f"drug://contraindications/{payload['drug_id']}",
@@ -368,7 +376,7 @@ def check_interactions(
     if blocked:
         return blocked
 
-    payload, _, _ = _resolve_by_name(medication_name)
+    payload, _, _, _ = _resolve_by_name(medication_name)
     if payload is None:
         result = _envelope(
             ok=False,
@@ -387,8 +395,7 @@ def check_interactions(
     interactions = payload.get("interactions", {})
     if isinstance(interactions, dict):
         for med in current_medications:
-            med_record, _, _ = get_record_by_any_name(med)
-            lookup_token = med_record.drug_id if med_record else med.strip().lower()
+            lookup_token = normalize_token(med)
             interaction = interactions.get(lookup_token)
             if interaction:
                 findings.append(
@@ -417,7 +424,7 @@ def check_interactions(
         "canonical_name": payload["canonical_name"],
         "checked_against": current_medications,
         "findings": findings,
-        "source": payload.get("source", "mock"),
+        "source": payload.get("source", "openfda"),
         "evidence": [
             {
                 "uri": f"drug://interactions/{payload['drug_id']}",
@@ -452,7 +459,7 @@ def explain_for_patient(
     if blocked:
         return blocked
 
-    payload, _, _ = _resolve_by_name(medication_name)
+    payload, _, _, _ = _resolve_by_name(medication_name)
     if payload is None:
         result = _envelope(
             ok=False,
@@ -477,7 +484,7 @@ def explain_for_patient(
             f"{payload['canonical_name'].title()} may help for {', '.join(payload.get('indications', []))}. "
             f"{simplified} This explanation is educational and not a diagnosis."
         ),
-        "source": payload.get("source", "mock"),
+        "source": payload.get("source", "openfda"),
         "evidence": [
             {
                 "uri": f"drug://patient-leaflet/{payload['drug_id']}",
@@ -508,7 +515,7 @@ def resource_label(drug_id: str) -> str:
         "indications": payload.get("indications", []),
         "dosage_form": payload.get("dosage_form", "unknown"),
         "label_summary": payload.get("evidence", {}).get("label", []),
-        "source": payload.get("source", "mock"),
+        "source": payload.get("source", "openfda"),
     }
     return json.dumps(payload)
 

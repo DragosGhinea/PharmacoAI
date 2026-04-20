@@ -186,7 +186,7 @@ Generic API-backed agents require:
 
 Note: In the current default catalog, all three agents are Gemini-backed, so `PLATFORM_AGENT_API_KEY` is optional unless you add API-provider agents.
 
-You can place these values in `backend/.env`.
+You can place these values in repository root `.env`.
 
 ### Agent Communication Endpoints
 

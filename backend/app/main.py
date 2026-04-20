@@ -1,8 +1,21 @@
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
+import os
+from pathlib import Path
+from time import perf_counter
+from datetime import datetime, timezone
+
 from fastapi import HTTPException, status
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+
+from ..env_loader import load_root_env
+
+load_root_env()
 
 from .agents_schemas import (
     AgentChatRequest,
@@ -34,6 +47,33 @@ from .schemas import (
 from .service import UserService
 from .tiers import TIER_FEATURES, Tier
 
+REQUEST_LOGGER = logging.getLogger("pharmacoai.backend.requests")
+REQUEST_LOG_PATH = Path(
+    os.getenv(
+        "BACKEND_REQUEST_LOG_FILE",
+        str(Path(__file__).resolve().parents[1] / "logs" / "requests.log"),
+    )
+)
+REQUEST_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _append_request_log_line(message: str) -> None:
+    timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    with REQUEST_LOG_PATH.open("a", encoding="utf-8") as fh:
+        fh.write(f"{timestamp} {message}\n")
+
+
+if not REQUEST_LOGGER.handlers:
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter(
+        "%(asctime)s %(levelname)s [%(name)s] %(message)s",
+        "%Y-%m-%dT%H:%M:%S",
+    )
+    handler.setFormatter(formatter)
+    REQUEST_LOGGER.addHandler(handler)
+REQUEST_LOGGER.setLevel(logging.INFO)
+REQUEST_LOGGER.propagate = False
+
 app = FastAPI(
     title="PharmacoAI Backend",
     version="0.1.0",
@@ -42,14 +82,55 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ],
+    allow_origins=[],
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def log_http_requests(request: Request, call_next):
+    started_at = perf_counter()
+    method = request.method
+    path = request.url.path
+    if request.url.query:
+        path = f"{path}?{request.url.query}"
+    client = request.client.host if request.client else "-"
+
+    try:
+        response = await call_next(request)
+    except Exception:
+        duration_ms = (perf_counter() - started_at) * 1000
+        failure_line = (
+            f"request_failed method={method} path={path} client={client} duration_ms={duration_ms:.2f}"
+        )
+        REQUEST_LOGGER.exception(
+            "request_failed method=%s path=%s client=%s duration_ms=%.2f",
+            method,
+            path,
+            client,
+            duration_ms,
+        )
+        _append_request_log_line(failure_line)
+        raise
+
+    duration_ms = (perf_counter() - started_at) * 1000
+    request_line = (
+        f"request method={method} path={path} status={response.status_code} "
+        f"client={client} duration_ms={duration_ms:.2f}"
+    )
+    REQUEST_LOGGER.info(
+        "request method=%s path=%s status=%s client=%s duration_ms=%.2f",
+        method,
+        path,
+        response.status_code,
+        client,
+        duration_ms,
+    )
+    _append_request_log_line(request_line)
+    return response
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -172,6 +253,65 @@ async def chat_with_agent(
     service: AgentsService = Depends(get_agents_service),
 ) -> AgentChatResponse:
     return await service.chat_with_agent(user=current_user, agent_id=agent_id, payload=payload)
+
+
+@app.post("/agents/chat", response_model=AgentChatResponse)
+async def chat_with_orchestrator(
+    payload: AgentChatRequest,
+    current_user: UserRecord = Depends(get_current_user),
+    service: AgentsService = Depends(get_agents_service),
+) -> AgentChatResponse:
+    return await service.chat_with_orchestrator(user=current_user, payload=payload)
+
+
+@app.post("/agents/chat/stream")
+async def chat_with_orchestrator_stream(
+    payload: AgentChatRequest,
+    current_user: UserRecord = Depends(get_current_user),
+    service: AgentsService = Depends(get_agents_service),
+) -> StreamingResponse:
+    queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+
+    def on_tool_event(event: dict[str, object]) -> None:
+        queue.put_nowait({"type": "tool_call", **event})
+
+    async def run_chat() -> None:
+        try:
+            result = await service.chat_with_orchestrator(
+                user=current_user,
+                payload=payload,
+                on_tool_event=on_tool_event,
+            )
+            await queue.put({"type": "final", "data": result.model_dump(mode="json")})
+        except Exception as exc:  # pragma: no cover - runtime fallback
+            await queue.put({"type": "error", "message": str(exc)})
+        finally:
+            await queue.put({"type": "done"})
+
+    task = asyncio.create_task(run_chat())
+
+    async def event_stream() -> object:
+        try:
+            while True:
+                item = await queue.get()
+                yield "data: " + json.dumps(item, ensure_ascii=True) + "\n\n"
+                # Hand control back to the loop so chunks are flushed progressively.
+                await asyncio.sleep(0)
+                if item.get("type") == "done":
+                    break
+        finally:
+            if not task.done():
+                task.cancel()
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/agents/handoff", response_model=AgentChatResponse)

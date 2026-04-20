@@ -1,11 +1,56 @@
 import { useEffect, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
-import { changeMyPassword, getMyUser, loginUser, sendUserMessage } from './api/usersApi';
+import { changeMyPassword, chatWithOrchestratorStream, getAgentConversation, getMyUser, loginUser } from './api/usersApi';
 import AdminUsersPanel from './components/AdminUsersPanel';
 
 const ADMIN_SESSION_KEY = 'pharmacoai_admin_session';
 const PHARMACIST_SESSION_KEY = 'pharmacoai_pharmacist_session';
+const PHARMACIST_CHAT_HISTORY_KEY_PREFIX = 'pharmacoai_pharmacist_chat_history_';
 const ADMIN_LOGIN_EMAIL = 'admin@pharmacoai.local';
+
+function readPharmacistChatHistory(userId) {
+  if (typeof window === 'undefined' || !userId) {
+    return [];
+  }
+
+  const raw = window.localStorage.getItem(`${PHARMACIST_CHAT_HISTORY_KEY_PREFIX}${userId}`);
+  if (!raw) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed
+      .filter((entry) => entry && typeof entry === 'object' && entry.conversationId)
+      .map((entry) => ({
+        conversationId: String(entry.conversationId),
+        title: String(entry.title || 'Untitled conversation'),
+        updatedAt: String(entry.updatedAt || new Date().toISOString()),
+        lastAgent: String(entry.lastAgent || ''),
+      }))
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  } catch {
+    return [];
+  }
+}
+
+function persistPharmacistChatHistory(userId, history) {
+  if (typeof window === 'undefined' || !userId) {
+    return;
+  }
+  window.localStorage.setItem(`${PHARMACIST_CHAT_HISTORY_KEY_PREFIX}${userId}`, JSON.stringify(history));
+}
+
+function upsertConversationHistoryEntry(history, nextEntry) {
+  const filtered = history.filter((entry) => entry.conversationId !== nextEntry.conversationId);
+  const merged = [nextEntry, ...filtered];
+  return merged.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
 
 function readAdminSession() {
   if (typeof window === 'undefined') {
@@ -117,12 +162,20 @@ function TopNav({ currentRoute, isAdminAuthenticated, isPharmacistAuthenticated,
             Log Out
           </button>
         ) : isPharmacistRoute && isPharmacistAuthenticated ? (
-          <a
-            className="bg-surface-container-low text-primary px-6 py-2.5 rounded-lg font-semibold manrope text-sm hover:bg-surface-container-high transition-colors"
-            href="/pharmacist/account"
-          >
-            Account
-          </a>
+          <div className="flex items-center gap-2">
+            <a
+              className="bg-primary-container text-white px-4 py-2.5 rounded-lg font-semibold manrope text-sm hover:scale-95 transition-transform duration-150 active:scale-90"
+              href="/pharmacist/chat"
+            >
+              Agent Chat
+            </a>
+            <a
+              className="bg-surface-container-low text-primary px-4 py-2.5 rounded-lg font-semibold manrope text-sm hover:bg-surface-container-high transition-colors"
+              href="/pharmacist/account"
+            >
+              Account
+            </a>
+          </div>
         ) : (
           <a
             className="bg-primary-container text-white px-6 py-2.5 rounded-lg font-semibold manrope text-sm hover:scale-95 transition-transform duration-150 active:scale-90"
@@ -284,14 +337,56 @@ function PharmacistLoginPage({ onLogin }) {
   );
 }
 
-function PharmacistDashboard({ pharmacistSession }) {
+function PharmacistChatPage({ pharmacistSession }) {
   const [question, setQuestion] = useState('');
-  const [reply, setReply] = useState('');
   const [userProfile, setUserProfile] = useState(null);
   const [error, setError] = useState('');
   const [messageInfo, setMessageInfo] = useState('');
   const [isSending, setIsSending] = useState(false);
-  const [selectedAgent, setSelectedAgent] = useState('');
+  const [conversationId, setConversationId] = useState('');
+  const [chatTurns, setChatTurns] = useState([]);
+  const [conversationMessages, setConversationMessages] = useState([]);
+  const [conversationHistory, setConversationHistory] = useState(() => readPharmacistChatHistory(pharmacistSession.userId));
+
+  useEffect(() => {
+    persistPharmacistChatHistory(pharmacistSession.userId, conversationHistory);
+  }, [pharmacistSession.userId, conversationHistory]);
+
+  function appendStreamedToolCall(event) {
+    const turnIndex = Number(event?.turn_index);
+    const call = event?.call;
+    const agentId = String(event?.agent_id || 'medication-info-agent');
+    if (!Number.isInteger(turnIndex) || !call || typeof call !== 'object') {
+      return;
+    }
+
+    setChatTurns((current) => {
+      const next = [...current];
+      while (next.length <= turnIndex) {
+        next.push({
+          agent_id: agentId,
+          provider: 'gemini',
+          model: 'streaming',
+          thought_summary: 'Running MCP tools...',
+          mcp_tool_calls: [],
+          response: '',
+          clinician_summary: '',
+          patient_summary: '',
+          evidence_snippets: [],
+          source_links: [],
+        });
+      }
+
+      const existingTurn = next[turnIndex] || {};
+      const existingCalls = Array.isArray(existingTurn.mcp_tool_calls) ? existingTurn.mcp_tool_calls : [];
+      next[turnIndex] = {
+        ...existingTurn,
+        agent_id: existingTurn.agent_id || agentId,
+        mcp_tool_calls: [...existingCalls, call],
+      };
+      return next;
+    });
+  }
 
   useEffect(() => {
     let mounted = true;
@@ -300,9 +395,6 @@ function PharmacistDashboard({ pharmacistSession }) {
         const profile = await getMyUser(pharmacistSession.userId);
         if (mounted) {
           setUserProfile(profile);
-          if (profile.allowed_agents?.length > 0) {
-            setSelectedAgent((current) => current || profile.allowed_agents[0]);
-          }
         }
       } catch (profileError) {
         if (mounted) {
@@ -330,28 +422,43 @@ function PharmacistDashboard({ pharmacistSession }) {
       return;
     }
 
-    if (!selectedAgent) {
-      setError('Please select an available agent first.');
-      return;
-    }
-
     setIsSending(true);
     try {
-      const response = await sendUserMessage(pharmacistSession.userId, question.trim());
-      setMessageInfo(`Usage: ${response.usage.used}/${response.usage.limit} this month`);
+      setChatTurns([]);
+      const response = await chatWithOrchestratorStream(
+        pharmacistSession.userId,
+        {
+        message: question.trim(),
+        conversation_id: conversationId || undefined,
+        metadata: {},
+        },
+        (event) => {
+          if (event?.type === 'tool_call') {
+            appendStreamedToolCall(event);
+          }
+        }
+      );
 
-      if (!response.accepted) {
-        setReply('');
-        setError(response.reason || 'Message limit reached for this tier.');
-      } else {
-        setReply('I got ur shit bro');
+      setConversationId(response.conversation_id || conversationId);
+      setChatTurns(response.turns || []);
+      setMessageInfo(`Conversation ID: ${response.conversation_id}`);
+      const turnList = response.turns || [];
+      const lastTurn = turnList[turnList.length - 1];
+      if (response.conversation_id) {
+        setConversationHistory((current) =>
+          upsertConversationHistoryEntry(current, {
+            conversationId: response.conversation_id,
+            title: question.trim().slice(0, 80) || 'Untitled conversation',
+            updatedAt: new Date().toISOString(),
+            lastAgent: String(lastTurn?.agent_id || 'orchestrator-agent'),
+          })
+        );
+        const conversationResponse = await getAgentConversation(pharmacistSession.userId, response.conversation_id);
+        setConversationMessages(conversationResponse.messages || []);
       }
 
       const refreshedProfile = await getMyUser(pharmacistSession.userId);
       setUserProfile(refreshedProfile);
-      if (refreshedProfile.allowed_agents?.length > 0 && !refreshedProfile.allowed_agents.includes(selectedAgent)) {
-        setSelectedAgent(refreshedProfile.allowed_agents[0]);
-      }
       setQuestion('');
     } catch (sendError) {
       if (sendError instanceof Error) {
@@ -365,117 +472,331 @@ function PharmacistDashboard({ pharmacistSession }) {
   }
 
   const tierLabel = userProfile?.tier ?? pharmacistSession.tier;
-  const availableAgents = userProfile?.allowed_agents ?? [];
   const usedMessages = userProfile?.monthly_messages_used ?? 0;
   const monthlyLimit = userProfile?.monthly_message_limit ?? 0;
   const remainingMessages = monthlyLimit > 0 ? Math.max(monthlyLimit - usedMessages, 0) : 0;
   const isLimitReached = monthlyLimit > 0 && usedMessages >= monthlyLimit;
 
+  async function reloadConversation() {
+    if (!conversationId) {
+      return;
+    }
+    setError('');
+    try {
+      const response = await getAgentConversation(pharmacistSession.userId, conversationId);
+      setConversationMessages(response.messages || []);
+      const assistantMessages = (response.messages || []).filter((item) => item.role === 'assistant');
+      const lastTurnSender = assistantMessages.length > 0 ? assistantMessages[assistantMessages.length - 1].sender : 'orchestrator-agent';
+      setConversationHistory((current) =>
+        upsertConversationHistoryEntry(current, {
+          conversationId,
+          title: current.find((entry) => entry.conversationId === conversationId)?.title || `Conversation ${conversationId.slice(0, 8)}`,
+          updatedAt: new Date().toISOString(),
+          lastAgent: String(lastTurnSender || 'orchestrator-agent'),
+        })
+      );
+    } catch (reloadError) {
+      if (reloadError instanceof Error) {
+        setError(reloadError.message);
+      } else {
+        setError('Could not reload conversation');
+      }
+    }
+  }
+
+  async function openConversation(targetConversationId) {
+    setError('');
+    try {
+      const response = await getAgentConversation(pharmacistSession.userId, targetConversationId);
+      setConversationId(targetConversationId);
+      setConversationMessages(response.messages || []);
+      setChatTurns([]);
+      setMessageInfo(`Conversation ID: ${targetConversationId}`);
+    } catch (openError) {
+      if (openError instanceof Error) {
+        setError(openError.message);
+      } else {
+        setError('Could not open conversation history');
+      }
+    }
+  }
+
+  function startNewConversation() {
+    setConversationId('');
+    setConversationMessages([]);
+    setChatTurns([]);
+    setQuestion('');
+    setMessageInfo('New conversation draft');
+  }
+
+  function roleBadgeClass(role) {
+    if (role === 'user') {
+      return 'bg-secondary text-white';
+    }
+    if (role === 'assistant') {
+      return 'bg-primary-container text-white';
+    }
+    return 'bg-surface-container-high text-on-surface-variant';
+  }
+
+  function roleLabel(message) {
+    if (message.role === 'user') {
+      return 'You';
+    }
+    if (message.sender) {
+      return message.sender;
+    }
+    return message.role;
+  }
+
+  const hasLiveTrace = chatTurns.some((turn) => Array.isArray(turn?.mcp_tool_calls) && turn.mcp_tool_calls.length > 0);
+  const finalTraceTurn = chatTurns.length > 0 ? chatTurns[chatTurns.length - 1] : null;
+  const finalTraceResponse = String(finalTraceTurn?.response || '').trim();
+  const displayMessages = (() => {
+    if (!finalTraceResponse || conversationMessages.length === 0) {
+      return conversationMessages;
+    }
+    const candidate = conversationMessages[conversationMessages.length - 1];
+    if (candidate?.role === 'assistant' && String(candidate?.content || '').trim() === finalTraceResponse) {
+      return conversationMessages.slice(0, -1);
+    }
+    return conversationMessages;
+  })();
+  const hasMessages = displayMessages.length > 0;
+
+  function compactQueryFromInput(input) {
+    if (!input || typeof input !== 'object') {
+      return '';
+    }
+    for (const key of ['name', 'medication_name', 'drug_id']) {
+      const value = input[key];
+      if (typeof value === 'string' && value.trim()) {
+        return value.trim();
+      }
+    }
+    return '';
+  }
+
+  function renderComposer(extraClass = '') {
+    return (
+      <form className={`space-y-4 ${extraClass}`.trim()} onSubmit={submitQuestion}>
+        <div className="rounded-xl border border-outline-variant/40 bg-surface-container-low p-3">
+          <p className="text-xs text-on-surface-variant">
+            The orchestrator automatically selects and chains agents based on your query. No manual selection is required.
+          </p>
+        </div>
+
+        <textarea
+          className="w-full min-h-36 rounded-2xl border-outline-variant/60 bg-surface px-4 py-3 text-sm"
+          placeholder="Example: Ce stii despre metamizol? verifica interactiunile si explica pe intelesul pacientului."
+          value={question}
+          onChange={(event) => setQuestion(event.target.value)}
+        />
+
+        <div className="flex flex-wrap gap-3">
+          <button
+            className="bg-primary-container text-white px-6 py-3 rounded-2xl text-sm font-bold shadow-lg shadow-primary-container/20 hover:scale-[0.99] transition-transform disabled:opacity-70"
+            type="submit"
+            disabled={isSending || isLimitReached}
+          >
+            {isSending ? 'Sending...' : 'Ask Agent'}
+          </button>
+          <button
+            className="px-6 py-3 rounded-2xl text-sm font-bold border border-outline-variant/60 bg-surface"
+            type="button"
+            onClick={reloadConversation}
+            disabled={!conversationId}
+          >
+            Reload Session Trace
+          </button>
+        </div>
+      </form>
+    );
+  }
+
   return (
     <main>
-      <section className="px-8 py-20 bg-surface-container-low min-h-[70vh]">
-        <div className="max-w-6xl mx-auto grid lg:grid-cols-12 gap-8">
-          <div className="lg:col-span-8 bg-surface-container-lowest rounded-3xl p-10 border border-outline-variant/40 shadow-sm">
-            <p className="text-xs uppercase font-bold tracking-[0.2em] text-secondary mb-2">Drug Agent</p>
-            <h2 className="text-4xl text-primary font-bold mb-3">Ask About Any Drug</h2>
-            <p className="text-sm text-on-surface-variant mb-8">
-              Ask clinical questions, interactions, and quick checks. Your pharmacist AI assistant will respond instantly.
-            </p>
-
-            <form className="space-y-4" onSubmit={submitQuestion}>
+      <section className="px-6 py-12 bg-surface-container-low min-h-[70vh]">
+        <div className="max-w-7xl mx-auto grid lg:grid-cols-12 gap-6">
+          <aside className="lg:col-span-3 bg-surface-container-lowest rounded-3xl p-6 border border-outline-variant/40 shadow-sm">
+            <div className="flex items-start justify-between gap-3 mb-4">
               <div>
-                <label className="block text-xs font-bold text-on-surface-variant uppercase tracking-widest mb-2">Select Agent</label>
-                <div className="relative">
-                  <select
-                    className="block w-full appearance-none rounded-xl border-outline-variant/60 bg-surface px-3 py-2 pr-10 text-sm"
-                    value={selectedAgent}
-                    onChange={(event) => setSelectedAgent(event.target.value)}
-                    disabled={availableAgents.length === 0}
-                  >
-                    {availableAgents.length === 0 && <option value="">No agents available</option>}
-                    {availableAgents.map((agent) => (
-                      <option key={agent} value={agent}>
-                        {agent}
-                      </option>
-                    ))}
-                  </select>
-                  <span className="material-symbols-outlined pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-on-surface-variant">
-                    keyboard_arrow_down
-                  </span>
-                </div>
+                <p className="text-xs uppercase font-bold tracking-[0.2em] text-secondary mb-1">Chat History</p>
+                <h2 className="text-xl text-primary font-bold">Pharmacist Agent</h2>
               </div>
-
-              <textarea
-                className="w-full min-h-36 rounded-2xl border-outline-variant/60 bg-surface px-4 py-3 text-sm"
-                placeholder="Example: Can amoxicillin interact with warfarin?"
-                value={question}
-                onChange={(event) => setQuestion(event.target.value)}
-              />
               <button
-                className="bg-primary-container text-white px-6 py-3 rounded-2xl text-sm font-bold shadow-lg shadow-primary-container/20 hover:scale-[0.99] transition-transform disabled:opacity-70"
-                type="submit"
-                disabled={isSending || isLimitReached || availableAgents.length === 0}
+                type="button"
+                onClick={startNewConversation}
+                className="px-3 py-2 rounded-xl text-xs font-bold bg-primary-container text-white"
               >
-                {isSending ? 'Sending...' : 'Ask Agent'}
+                New Chat
               </button>
-            </form>
+            </div>
+
+            <div className="rounded-2xl border border-outline-variant/40 bg-surface-container-low p-4 mb-4">
+              <p className="text-xs uppercase tracking-wider text-on-surface-variant mb-1">Signed In</p>
+              <p className="text-sm font-semibold text-primary">{pharmacistSession.fullName}</p>
+              <p className="text-xs text-on-surface-variant break-all mt-1">{pharmacistSession.email}</p>
+            </div>
+
+            <div className="space-y-2 max-h-[28rem] overflow-y-auto pr-1">
+              {conversationHistory.length > 0 ? (
+                conversationHistory.map((entry) => (
+                  <button
+                    key={entry.conversationId}
+                    type="button"
+                    onClick={() => openConversation(entry.conversationId)}
+                    className={
+                      conversationId === entry.conversationId
+                        ? 'w-full text-left rounded-xl border border-secondary bg-secondary/10 p-3'
+                        : 'w-full text-left rounded-xl border border-outline-variant/40 bg-surface p-3 hover:bg-surface-container-low'
+                    }
+                  >
+                    <p className="text-sm font-semibold text-primary truncate">{entry.title}</p>
+                    <p className="text-xs text-on-surface-variant mt-1 truncate">{entry.lastAgent || 'Agent unknown'}</p>
+                    <p className="text-[11px] text-on-surface-variant mt-1">{new Date(entry.updatedAt).toLocaleString()}</p>
+                  </button>
+                ))
+              ) : (
+                <div className="rounded-xl border border-outline-variant/40 bg-surface p-3 text-xs text-on-surface-variant">
+                  No conversations yet. Start your first chat.
+                </div>
+              )}
+            </div>
+
+            <a
+              className="mt-4 inline-flex px-4 py-2 rounded-xl text-sm font-bold bg-surface-container-low hover:bg-surface-container-high transition-colors"
+              href="/pharmacist/account"
+            >
+              Account Settings
+            </a>
+          </aside>
+
+          <div className="lg:col-span-9 bg-surface-container-lowest rounded-3xl p-8 border border-outline-variant/40 shadow-sm">
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
+              <div>
+                <p className="text-xs uppercase font-bold tracking-[0.2em] text-secondary mb-1">Dedicated Chat Route</p>
+                <h3 className="text-3xl text-primary font-bold">Orchestrated Agent Chat</h3>
+              </div>
+              <div className="rounded-xl border border-outline-variant/40 bg-surface px-3 py-2">
+                <p className="text-[11px] uppercase tracking-wider text-on-surface-variant">Conversation</p>
+                <p className="text-xs font-semibold text-primary break-all">{conversationId || 'Not started'}</p>
+              </div>
+            </div>
+
+            {!hasMessages && renderComposer()}
 
             {messageInfo && <p className="mt-4 text-sm font-semibold text-secondary">{messageInfo}</p>}
             {error && <p className="mt-2 text-sm font-semibold text-error">{error}</p>}
 
-            {reply && (
-              <div className="mt-6 rounded-2xl border border-secondary/30 bg-secondary/10 p-4">
-                <p className="text-xs uppercase tracking-wider font-bold text-secondary mb-2">Agent Reply</p>
-                <p className="text-primary font-semibold">{reply}</p>
-              </div>
-            )}
-          </div>
-
-          <div className="lg:col-span-4 bg-surface-container-lowest rounded-3xl p-8 border border-outline-variant/40 shadow-sm">
-            <p className="text-xs uppercase font-bold tracking-[0.2em] text-secondary mb-2">Session</p>
-            <h3 className="text-2xl text-primary font-bold mb-4">{pharmacistSession.fullName}</h3>
-
-            <div className="space-y-3">
-              <div className="rounded-2xl border border-outline-variant/40 bg-surface-container-low p-4">
-                <p className="text-xs uppercase tracking-wider text-on-surface-variant mb-1">Email</p>
-                <p className="text-primary font-semibold text-sm break-all">{pharmacistSession.email}</p>
-              </div>
-
-              <div className="rounded-2xl border border-outline-variant/40 bg-surface-container-low p-4">
-                <p className="text-xs uppercase tracking-wider text-on-surface-variant mb-1">Tier</p>
-                <p className="text-primary font-semibold uppercase">{tierLabel}</p>
-              </div>
-
-              <div className="rounded-2xl border border-outline-variant/40 bg-surface-container-low p-4">
-                <p className="text-xs uppercase tracking-wider text-on-surface-variant mb-1">Monthly Message Usage</p>
-                <p className="text-primary font-semibold">
-                  {usedMessages}/{monthlyLimit} used
-                </p>
-                <p className="text-xs text-on-surface-variant mt-1">{remainingMessages} remaining</p>
-              </div>
-
-              <div className="rounded-2xl border border-outline-variant/40 bg-surface-container-low p-4">
-                <p className="text-xs uppercase tracking-wider text-on-surface-variant mb-2">Available Agents</p>
-                <div className="flex flex-wrap gap-2">
-                  {availableAgents.length > 0 ? (
-                    availableAgents.map((agent) => (
-                      <span key={agent} className="px-2 py-1 rounded-lg text-xs bg-surface text-on-surface-variant border border-outline-variant/50">
-                        {agent}
+            <div className="mt-8 space-y-4 max-h-[44rem] overflow-y-auto pr-1">
+              {displayMessages.length === 0 && !hasLiveTrace && !isSending ? (
+                <div className="rounded-2xl border border-outline-variant/50 bg-surface p-4 text-sm text-on-surface-variant">
+                  No chat turns yet. Send a message to start a tracked conversation.
+                </div>
+              ) : (
+                displayMessages.map((message, index) => (
+                  <div
+                    key={`${message.timestamp || index}-${index}`}
+                    className={
+                      message.role === 'user'
+                        ? 'ml-auto max-w-[85%] rounded-2xl border border-secondary/40 bg-secondary/10 p-4'
+                        : 'mr-auto max-w-[90%] rounded-2xl border border-outline-variant/40 bg-surface p-4'
+                    }
+                  >
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className={`px-2 py-1 rounded-md text-xs font-semibold ${roleBadgeClass(message.role)}`}>
+                        {roleLabel(message)}
                       </span>
-                    ))
-                  ) : (
-                    <span className="text-xs text-on-surface-variant">Loading...</span>
+                      {message.timestamp && (
+                        <span className="text-[11px] text-on-surface-variant">{new Date(message.timestamp).toLocaleTimeString()}</span>
+                      )}
+                    </div>
+                    <div className="prose prose-sm max-w-none text-on-surface-variant">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content || ''}</ReactMarkdown>
+                    </div>
+                  </div>
+                ))
+              )}
+
+              {(hasLiveTrace || isSending) && (
+                <div className="mr-auto w-full max-w-[92%] rounded-2xl border border-secondary/40 bg-secondary/5 p-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <span className="px-2 py-1 rounded-md text-xs font-semibold bg-secondary text-white">MCP Activity</span>
+                    <span className="text-xs text-on-surface-variant">Live tool orchestration trace</span>
+                  </div>
+
+                  <div className="space-y-3">
+                    {chatTurns.map((turn, turnIndex) => (
+                      <div key={`${turn.agent_id || 'agent'}-${turnIndex}`} className="rounded-xl border border-outline-variant/40 bg-surface p-3">
+                        <p className="text-xs font-semibold text-primary mb-2">{turn.agent_id || 'agent'}</p>
+                        {Array.isArray(turn.mcp_tool_calls) && turn.mcp_tool_calls.length > 0 ? (
+                          <div className="space-y-2">
+                            {turn.mcp_tool_calls.map((call, toolIndex) => {
+                              const compactQuery = compactQueryFromInput(call?.input);
+                              return (
+                                <details key={`${call?.tool_name || 'tool'}-${toolIndex}`} className="rounded-lg border border-outline-variant/40 bg-surface-container-low p-2">
+                                  <summary className="cursor-pointer list-none">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <span className="px-2 py-1 rounded-md text-xs bg-surface text-on-surface-variant border border-outline-variant/50">{call?.tool_name || 'tool'}</span>
+                                      <span
+                                        className={
+                                          call?.status === 'success'
+                                            ? 'px-2 py-1 rounded-md text-xs bg-secondary/15 text-secondary'
+                                            : call?.status === 'warning'
+                                              ? 'px-2 py-1 rounded-md text-xs bg-tertiary-fixed/30 text-primary'
+                                              : 'px-2 py-1 rounded-md text-xs bg-error/15 text-error'
+                                        }
+                                      >
+                                        {call?.status || 'unknown'}
+                                      </span>
+                                      {compactQuery && <span className="text-xs text-on-surface-variant truncate max-w-[20rem]">query: {compactQuery}</span>}
+                                    </div>
+                                  </summary>
+                                  <div className="mt-2 space-y-2">
+                                    <pre className="text-xs whitespace-pre-wrap break-words text-on-surface-variant bg-surface rounded-lg p-2 border border-outline-variant/40">
+                                      {JSON.stringify(call?.input || {}, null, 2)}
+                                    </pre>
+                                    <pre className="text-xs whitespace-pre-wrap break-words text-on-surface-variant bg-surface rounded-lg p-2 border border-outline-variant/40">
+                                      {call?.output ? JSON.stringify(call.output, null, 2) : (call?.output_summary || 'No output')}
+                                    </pre>
+                                  </div>
+                                </details>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <p className="text-xs text-on-surface-variant">Waiting for MCP calls...</p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+
+                  {isSending && (
+                    <div className="mt-4 flex items-center gap-2 text-sm text-on-surface-variant">
+                      <span className="inline-block h-4 w-4 rounded-full border-2 border-secondary/30 border-t-secondary animate-spin" />
+                      <span>Running tools and composing answer...</span>
+                    </div>
+                  )}
+
+                  {!isSending && finalTraceResponse && (
+                    <div className="mt-4 rounded-xl border border-outline-variant/40 bg-surface p-3">
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className="px-2 py-1 rounded-md text-xs font-semibold bg-primary-container text-white">
+                          {finalTraceTurn?.agent_id || 'assistant'}
+                        </span>
+                        <span className="text-xs text-on-surface-variant">Final response</span>
+                      </div>
+                      <div className="prose prose-sm max-w-none text-on-surface-variant">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{finalTraceResponse}</ReactMarkdown>
+                      </div>
+                    </div>
                   )}
                 </div>
-              </div>
-
-              <a
-                className="inline-flex px-4 py-2 rounded-xl text-sm font-bold bg-surface-container-low hover:bg-surface-container-high transition-colors"
-                href="/pharmacist/account"
-              >
-                Go to Account
-              </a>
+              )}
             </div>
+
+            {hasMessages && renderComposer('mt-8')}
           </div>
         </div>
       </section>
@@ -545,7 +866,7 @@ function PharmacistAccountPage({ pharmacistSession, onLogout, onSessionRefresh }
             </div>
 
             <div className="flex gap-3">
-              <a className="px-4 py-2 rounded-xl text-sm font-bold bg-surface-container-low hover:bg-surface-container-high transition-colors" href="/pharmacist/agent">
+              <a className="px-4 py-2 rounded-xl text-sm font-bold bg-surface-container-low hover:bg-surface-container-high transition-colors" href="/pharmacist/chat">
                 Back to Agent
               </a>
               <button
@@ -899,7 +1220,8 @@ export default function App() {
   const isAdminRoute = pathname.startsWith('/admin');
   const isPharmacistRoute = pathname.startsWith('/pharmacist');
   const isPharmacistAccountRoute = pathname.startsWith('/pharmacist/account');
-  const isPharmacistAgentRoute = pathname.startsWith('/pharmacist/agent') || pathname === '/pharmacist';
+  const isPharmacistChatRoute = pathname.startsWith('/pharmacist/chat') || pathname.startsWith('/pharmacist/agent');
+  const isPharmacistRootRoute = pathname === '/pharmacist';
   const currentRoute = isAdminRoute ? 'admin' : isPharmacistRoute ? 'pharmacist' : 'landing';
 
   const [adminSession, setAdminSession] = useState(() => readAdminSession());
@@ -949,7 +1271,7 @@ export default function App() {
     setPharmacistSession(session);
 
     if (typeof window !== 'undefined') {
-      window.location.href = '/pharmacist/agent';
+      window.location.href = '/pharmacist/chat';
     }
   }
 
@@ -1001,10 +1323,10 @@ export default function App() {
               onLogout={handlePharmacistLogout}
               onSessionRefresh={refreshPharmacistSession}
             />
-          ) : isPharmacistAgentRoute ? (
-            <PharmacistDashboard pharmacistSession={pharmacistSession} />
+          ) : isPharmacistChatRoute || isPharmacistRootRoute ? (
+            <PharmacistChatPage pharmacistSession={pharmacistSession} />
           ) : (
-            <PharmacistDashboard pharmacistSession={pharmacistSession} />
+            <PharmacistChatPage pharmacistSession={pharmacistSession} />
           )
         ) : (
           <PharmacistLoginPage onLogin={handlePharmacistLogin} />

@@ -144,3 +144,149 @@ export function sendUserMessage(userId, prompt) {
     body: JSON.stringify({ prompt }),
   });
 }
+
+export function listAgents(userId) {
+  return apiRequest('/agents', {
+    headers: {
+      'X-User-Id': userId,
+    },
+  });
+}
+
+export function chatWithAgent(userId, agentId, payload) {
+  return apiRequest(`/agents/${agentId}/chat`, {
+    method: 'POST',
+    headers: {
+      'X-User-Id': userId,
+    },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function chatWithOrchestrator(userId, payload) {
+  return apiRequest('/agents/chat', {
+    method: 'POST',
+    headers: {
+      'X-User-Id': userId,
+    },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function chatWithOrchestratorStream(userId, payload, onEvent) {
+  const response = await fetch(`${API_BASE_URL}/agents/chat/stream`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-User-Id': userId,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    let message = 'Request failed';
+    try {
+      const data = await response.json();
+      message = formatDetail(data.detail) ?? message;
+    } catch {
+      // Keep fallback.
+    }
+    throw new Error(message);
+  }
+
+  if (!response.body) {
+    throw new Error('Streaming response body is unavailable');
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let finalData = null;
+
+  function handleEventPayload(payloadText) {
+    if (!payloadText) {
+      return;
+    }
+
+    let event;
+    try {
+      event = JSON.parse(payloadText);
+    } catch {
+      return;
+    }
+
+    if (typeof onEvent === 'function') {
+      onEvent(event);
+    }
+
+    if (event.type === 'error') {
+      throw new Error(String(event.message || 'Streaming request failed'));
+    }
+    if (event.type === 'final') {
+      finalData = event.data;
+    }
+  }
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+
+    buffer += decoder.decode(value, { stream: true });
+    const chunks = buffer.split('\n\n');
+    buffer = chunks.pop() ?? '';
+
+    for (const rawChunk of chunks) {
+      const chunk = rawChunk.trim();
+      if (!chunk) {
+        continue;
+      }
+
+      // Support SSE framing: data: {json}
+      if (chunk.startsWith('data:')) {
+        const payloadText = chunk
+          .split('\n')
+          .filter((line) => line.startsWith('data:'))
+          .map((line) => line.slice(5).trim())
+          .join('');
+        handleEventPayload(payloadText);
+        continue;
+      }
+
+      // Backward-compatible plain NDJSON line fallback.
+      const lines = chunk.split('\n');
+      for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line) {
+          continue;
+        }
+        handleEventPayload(line);
+      }
+    }
+  }
+
+  if (!finalData) {
+    throw new Error('No final response received from stream');
+  }
+
+  return finalData;
+}
+
+export function handoffAgents(userId, payload) {
+  return apiRequest('/agents/handoff', {
+    method: 'POST',
+    headers: {
+      'X-User-Id': userId,
+    },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function getAgentConversation(userId, conversationId) {
+  return apiRequest(`/agents/conversations/${conversationId}`, {
+    headers: {
+      'X-User-Id': userId,
+    },
+  });
+}

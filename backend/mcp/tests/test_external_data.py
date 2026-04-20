@@ -144,3 +144,38 @@ def test_fetch_openfda_related_medications_returns_distinct_candidates(monkeypat
     assert len(related) == 1
     assert related[0]["canonical_name"] == "naproxen"
     assert related[0]["source"] == "openfda"
+
+
+def test_fetch_openfda_facts_uses_rxnorm_rxcui_fallback(monkeypatch) -> None:
+    external_data.clear_openfda_cache()
+
+    searches: list[str] = []
+
+    def fake_rxnorm_matches(_name: str) -> tuple[list[str], list[str]]:
+        return ["levothyroxine"], ["8617"]
+
+    def fake_query(search: str, limit: int):
+        searches.append(search)
+        if "openfda.rxcui" in search:
+            return [
+                {
+                    "openfda": {
+                        "generic_name": ["Levothyroxine"],
+                        "brand_name": ["Euthyrox"],
+                        "substance_name": ["Levothyroxine sodium"],
+                        "route": ["ORAL"],
+                    },
+                    "indications_and_usage": ["Thyroid hormone replacement"],
+                }
+            ]
+        return None
+
+    monkeypatch.setattr(external_data, "_rxnorm_matches", fake_rxnorm_matches)
+    monkeypatch.setattr(external_data, "_query_openfda", fake_query)
+    monkeypatch.setenv("MCP_OPENFDA_CACHE_TTL_SECONDS", "0")
+
+    result = external_data.fetch_openfda_facts("eutyrox")
+
+    assert result is not None
+    assert result["canonical_name"] == "levothyroxine"
+    assert any("openfda.rxcui" in item for item in searches)

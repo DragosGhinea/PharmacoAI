@@ -37,6 +37,13 @@ def _extract_first_lines(record: dict[str, Any], key: str, limit: int = 3) -> li
     return lines[:limit]
 
 
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 async def _rxnorm_normalize(name: str) -> dict[str, Any]:
     params = {"term": name, "maxEntries": 1}
     async with httpx.AsyncClient(timeout=8.0) as client:
@@ -52,7 +59,7 @@ async def _rxnorm_normalize(name: str) -> dict[str, Any]:
         return {
             "name": name,
             "rxcui": first.get("rxcui"),
-            "score": int(first.get("score", "0")),
+            "score": _safe_float(first.get("score", 0.0)),
         }
 
     return {"name": name, "rxcui": None, "score": 0}

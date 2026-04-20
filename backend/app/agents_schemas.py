@@ -48,6 +48,8 @@ class AgentChatTurn(BaseModel):
     response: str
     provider: AgentProvider
     model: str
+    thought_summary: str | None = None
+    mcp_tool_calls: list[dict[str, Any]] = Field(default_factory=list)
     clinician_summary: str | None = None
     patient_summary: str | None = None
     evidence_snippets: list[str] = Field(default_factory=list)
