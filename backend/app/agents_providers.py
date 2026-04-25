@@ -74,6 +74,32 @@ class GenericApiAgentClient:
 
 class GeminiAgentClient:
     @staticmethod
+    def _build_api_key_candidates(primary_env: str) -> list[str]:
+        candidates: list[str] = []
+
+        primary_key = os.getenv(primary_env, "").strip()
+        if primary_key:
+            candidates.append(primary_key)
+
+        numbered_envs: list[tuple[int, str]] = []
+        for env_name, value in os.environ.items():
+            if not env_name.startswith("GEMINI_API_KEY_"):
+                continue
+            suffix = env_name.removeprefix("GEMINI_API_KEY_")
+            if not suffix.isdigit():
+                continue
+            key_value = value.strip()
+            if not key_value:
+                continue
+            numbered_envs.append((int(suffix), key_value))
+
+        for _, key_value in sorted(numbered_envs, key=lambda item: item[0]):
+            if key_value not in candidates:
+                candidates.append(key_value)
+
+        return candidates
+
+    @staticmethod
     def _build_model_candidates(model: str) -> list[str]:
         raw_fallbacks = os.getenv(
             "PHARMACOAI_GEMINI_MODEL_FALLBACKS",
@@ -106,12 +132,30 @@ class GeminiAgentClient:
 
         return str(payload)[:500]
 
+    @staticmethod
+    def _is_rate_limit_like(status_code: int, error_detail: str) -> bool:
+        if status_code == 429:
+            return True
+
+        detail = error_detail.lower()
+        rate_limit_markers = [
+            "rate limit",
+            "quota",
+            "resource exhausted",
+            "too many requests",
+            "quota exceeded",
+        ]
+        return any(marker in detail for marker in rate_limit_markers)
+
     async def generate(self, agent: AgentDefinition, messages: list[dict[str, str]]) -> str:
-        api_key = os.getenv(agent.api_key_env, "").strip()
-        if not api_key:
+        api_keys = self._build_api_key_candidates(agent.api_key_env)
+        if not api_keys:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=f"Missing Gemini API key for env var '{agent.api_key_env}'",
+                detail=(
+                    "Missing Gemini API keys. Expected at least one of "
+                    f"'{agent.api_key_env}' or GEMINI_API_KEY_1/2/3..."
+                ),
             )
 
         contents = []
@@ -132,31 +176,45 @@ class GeminiAgentClient:
 
         attempts: list[tuple[str, int, str]] = []
         data: dict[str, object] | None = None
-        for model_name in self._build_model_candidates(agent.model):
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
-            async with httpx.AsyncClient(timeout=_provider_timeout_seconds()) as client:
-                response = await client.post(url, json=payload)
+        model_candidates = self._build_model_candidates(agent.model)
+        for key_index, api_key in enumerate(api_keys):
+            rotate_key = False
+            for model_name in model_candidates:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+                async with httpx.AsyncClient(timeout=_provider_timeout_seconds()) as client:
+                    response = await client.post(url, json=payload)
 
-            if response.status_code >= 400:
-                error_detail = self._extract_error_detail(response)
-                attempts.append((model_name, response.status_code, error_detail))
-                if response.status_code in {404, 429, 500, 502, 503, 504}:
-                    continue
+                if response.status_code >= 400:
+                    error_detail = self._extract_error_detail(response)
+                    attempts.append((model_name, response.status_code, error_detail))
 
-                raise HTTPException(
-                    status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail=(
-                        f"Gemini request failed for '{agent.id}' model '{model_name}' "
-                        f"({response.status_code}): {error_detail}"
-                    ),
-                )
+                    if self._is_rate_limit_like(response.status_code, error_detail):
+                        rotate_key = True
+                        break
 
-            parsed = response.json()
-            if isinstance(parsed, dict):
-                data = parsed
+                    if response.status_code in {404, 500, 502, 503, 504}:
+                        continue
+
+                    raise HTTPException(
+                        status_code=status.HTTP_502_BAD_GATEWAY,
+                        detail=(
+                            f"Gemini request failed for '{agent.id}' model '{model_name}' "
+                            f"({response.status_code}): {error_detail}"
+                        ),
+                    )
+
+                parsed = response.json()
+                if isinstance(parsed, dict):
+                    data = parsed
+                    break
+
+                attempts.append((model_name, response.status_code, "Unexpected non-object Gemini response payload"))
+
+            if data is not None:
                 break
 
-            attempts.append((model_name, response.status_code, "Unexpected non-object Gemini response payload"))
+            if rotate_key and key_index < len(api_keys) - 1:
+                continue
 
         if data is None:
             attempted_models = ", ".join([item[0] for item in attempts]) or agent.model
@@ -165,7 +223,7 @@ class GeminiAgentClient:
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail=(
                     f"Gemini request failed for '{agent.id}'. Tried models: {attempted_models}. "
-                    f"Last error: {last_detail}"
+                    f"Tried {len(api_keys)} API key(s). Last error: {last_detail}"
                 ),
             )
 

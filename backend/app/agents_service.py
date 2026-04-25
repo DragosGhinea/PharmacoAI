@@ -1062,7 +1062,24 @@ class AgentsService:
         calls: list[dict[str, Any]] = []
 
         async def _invoke(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
+            stream_id = f"{agent_id}-{len(calls)}-{tool_name}"
+            if on_tool_call:
+                on_tool_call(
+                    {
+                        "stream_id": stream_id,
+                        "tool_name": tool_name,
+                        "status": "running",
+                        "transport": "in-process",
+                        "input": args,
+                        "output": None,
+                        "error": None,
+                        "output_summary": "Pending...",
+                    }
+                )
+                await asyncio.sleep(0)
+
             call = call_mcp_tool(tool_name, args=args, caller_id=user_id)
+            call["stream_id"] = stream_id
             calls.append(call)
             if on_tool_call:
                 on_tool_call(call)
