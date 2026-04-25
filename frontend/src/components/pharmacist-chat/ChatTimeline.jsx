@@ -155,12 +155,24 @@ function AgentWorkBox({ children, compactMode }) {
 export default function ChatTimeline({
   conversationMessages,
   chatTurns,
+  agentWorkHistory = [],
   assistantBaseIndex = 0,
   hasLiveTrace,
   isSending,
   compactMode = false,
 }) {
   const hasVisibleMessages = hasVisibleTimelineMessages(conversationMessages);
+  const agentWorkAssistantFingerprints = new Set();
+  (Array.isArray(agentWorkHistory) ? agentWorkHistory : []).forEach((entry) => {
+    const assistantItems = Array.isArray(entry?.assistantMessages) ? entry.assistantMessages : [];
+    assistantItems.forEach((message) => {
+      const sender = String(message?.sender || 'assistant');
+      const content = normalizeFingerprintText(message?.content || '');
+      if (content) {
+        agentWorkAssistantFingerprints.add(`${sender}|${content}`);
+      }
+    });
+  });
 
   function renderMessageBubble(message, key) {
     const content = compactMode ? truncateMessage(String(message.content || ''), 280) : message.content;
@@ -218,11 +230,22 @@ export default function ChatTimeline({
           if (isSending && chatTurns.length > 0) {
             const liveTimeline = [];
             const seenDrafts = new Set();
+            const existingDrafts = new Set();
 
             conversationMessages.forEach((message, index, arr) => {
               const normalizedMessage = normalizeMessageRole(message);
               if (!shouldDisplayAssistantMessage(normalizedMessage, index, arr)) {
                 return;
+              }
+              if (normalizedMessage.role === 'assistant') {
+                const sender = String(normalizedMessage.sender || 'assistant');
+                const content = normalizeFingerprintText(normalizedMessage.content || '');
+                if (content) {
+                  if (agentWorkAssistantFingerprints.has(`${sender}|${content}`)) {
+                    return;
+                  }
+                  existingDrafts.add(`${sender}|${content}`);
+                }
               }
               liveTimeline.push(renderMessageBubble(normalizedMessage, `${message.timestamp || index}-${index}`));
             });
@@ -231,7 +254,7 @@ export default function ChatTimeline({
               liveTimeline.push(<McpTurnCard key={`live-turn-${turnIndex}`} turn={turn} turnIndex={turnIndex} />);
               const draft = turnPreviewText(turn);
               const draftFingerprint = `${turn.agent_id || 'agent'}|${normalizeFingerprintText(draft)}`;
-              if (!draft || seenDrafts.has(draftFingerprint)) {
+              if (!draft || seenDrafts.has(draftFingerprint) || existingDrafts.has(draftFingerprint)) {
                 return;
               }
               seenDrafts.add(draftFingerprint);
@@ -245,18 +268,67 @@ export default function ChatTimeline({
           }
 
           const timeline = [];
-          const agentWorkItems = [];
+          const agentWorkEntries = Array.isArray(agentWorkHistory)
+            ? agentWorkHistory
+            : [];
           let assistantTurnIndex = 0;
           let assistantSeenCount = 0;
           let lastAssistantFingerprint = '';
           let lastAssistantIndex = -1;
-          let agentWorkInserted = false;
 
           const normalizedMessages = conversationMessages.map((message) => normalizeMessageRole(message));
+          let assistantCounter = 0;
           normalizedMessages.forEach((message, index, arr) => {
-            if (message.role === 'assistant' && shouldDisplayAssistantMessage(message, index, arr)) {
-              lastAssistantIndex = index;
+            if (message.role === 'assistant') {
+              const isVisible = shouldDisplayAssistantMessage(message, index, arr);
+              if (isVisible && assistantCounter >= assistantBaseIndex) {
+                lastAssistantIndex = index;
+              }
+              assistantCounter += 1;
             }
+          });
+
+          const assistantIndexMap = [];
+          normalizedMessages.forEach((message, index, arr) => {
+            if (message.role !== 'assistant') {
+              return;
+            }
+            if (!shouldDisplayAssistantMessage(message, index, arr)) {
+              return;
+            }
+            assistantIndexMap.push(index);
+          });
+
+          const agentWorkBlocks = new Map();
+          agentWorkEntries.forEach((entry, idx) => {
+            if (!entry || !Array.isArray(entry.turns) || entry.turns.length === 0) {
+              return;
+            }
+            const startIndex = Number(entry.assistantBaseIndex || 0);
+            const endIndex = Math.max(startIndex + entry.turns.length - 1, 0);
+            const messageIndex = assistantIndexMap[endIndex];
+            if (typeof messageIndex !== 'number') {
+              return;
+            }
+            const items = [];
+            const turnCards = entry.turns.map((turn, turnIndex) => (
+              <McpTurnCard key={`hist-turn-${idx}-${turnIndex}`} turn={turn} turnIndex={turnIndex} />
+            ));
+            items.push(...turnCards);
+            const assistantItems = Array.isArray(entry.assistantMessages) ? entry.assistantMessages : [];
+            assistantItems.forEach((message, msgIndex) => {
+              items.push(
+                renderMessageBubble(
+                  normalizeMessageRole(message),
+                  `hist-msg-${idx}-${msgIndex}-${message.timestamp || msgIndex}`
+                )
+              );
+            });
+            agentWorkBlocks.set(messageIndex, (
+              <AgentWorkBox key={`agent-work-${idx}`} compactMode={compactMode}>
+                {items}
+              </AgentWorkBox>
+            ));
           });
 
           function pushDraftTurnMessage(turn, suffix = 'Draft') {
@@ -292,15 +364,18 @@ export default function ChatTimeline({
             if (normalizedMessage.role === 'assistant') {
               if (assistantSeenCount >= assistantBaseIndex && assistantTurnIndex < chatTurns.length) {
                 matchedTurn = chatTurns[assistantTurnIndex];
-                agentWorkItems.push(
-                  <McpTurnCard key={`turn-${assistantTurnIndex}`} turn={matchedTurn} turnIndex={assistantTurnIndex} />
-                );
                 assistantTurnIndex += 1;
               }
               assistantSeenCount += 1;
             }
 
             const isVisibleAssistant = shouldDisplayAssistantMessage(normalizedMessage, index, arr);
+            if (normalizedMessage.role === 'assistant' && assistantSeenCount <= assistantBaseIndex) {
+              if (isVisibleAssistant) {
+                timeline.push(renderMessageBubble(normalizedMessage, `${normalizedMessage.timestamp || index}-${index}`));
+              }
+              return;
+            }
             if (!isVisibleAssistant && shouldIncludeInAgentWork(normalizedMessage)) {
               const sender = String(normalizedMessage.sender || 'assistant');
               const content = normalizeFingerprintText(normalizedMessage.content || '');
@@ -328,21 +403,15 @@ export default function ChatTimeline({
                 return;
               }
               lastAssistantFingerprint = fingerprint;
-              const isFinalAssistant = index === lastAssistantIndex;
-              const bubble = renderMessageBubble(normalizedMessage, `${normalizedMessage.timestamp || index}-${index}`);
-              if (isFinalAssistant) {
-                if (agentWorkItems.length > 0 && !agentWorkInserted) {
-                  timeline.push(
-                    <AgentWorkBox key="agent-work" compactMode={compactMode}>
-                      {agentWorkItems}
-                    </AgentWorkBox>
-                  );
-                  agentWorkInserted = true;
-                }
-                timeline.push(bubble);
-              } else {
-                agentWorkItems.push(bubble);
+              if (agentWorkAssistantFingerprints.has(fingerprint)) {
+                return;
               }
+              const bubble = renderMessageBubble(normalizedMessage, `${normalizedMessage.timestamp || index}-${index}`);
+              const agentWorkBlock = agentWorkBlocks.get(index);
+              if (agentWorkBlock) {
+                timeline.push(agentWorkBlock);
+              }
+              timeline.push(bubble);
               return;
             }
 
@@ -351,21 +420,10 @@ export default function ChatTimeline({
 
           while (assistantTurnIndex < chatTurns.length) {
             const tailTurn = chatTurns[assistantTurnIndex];
-            agentWorkItems.push(
-              <McpTurnCard key={`turn-tail-${assistantTurnIndex}`} turn={tailTurn} turnIndex={assistantTurnIndex} />
-            );
             if (isSending) {
               pushDraftTurnMessage(tailTurn);
             }
             assistantTurnIndex += 1;
-          }
-
-          if (agentWorkItems.length > 0 && !agentWorkInserted) {
-            timeline.push(
-              <AgentWorkBox key="agent-work" compactMode={compactMode}>
-                {agentWorkItems}
-              </AgentWorkBox>
-            );
           }
 
           return timeline;

@@ -84,3 +84,7 @@ class AgentConversation(BaseModel):
 
 class AgentListResponse(BaseModel):
     agents: list[AgentDefinition]
+
+
+class StreamCancelRequest(BaseModel):
+    request_id: str = Field(min_length=8, max_length=120)

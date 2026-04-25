@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 
-import { chatWithOrchestratorStream, getAgentConversation, getMyUser } from '../api/usersApi';
+import { cancelOrchestratorStream, chatWithOrchestratorStream, getAgentConversation, getMyUser } from '../api/usersApi';
 import ChatComposer from '../components/pharmacist-chat/ChatComposer';
 import ChatSidebar from '../components/pharmacist-chat/ChatSidebar';
 import ChatTimeline from '../components/pharmacist-chat/ChatTimeline';
@@ -24,6 +24,9 @@ export default function PharmacistChatPage({ pharmacistSession }) {
   const [conversationMessages, setConversationMessages] = useState([]);
   const [conversationHistory, setConversationHistory] = useState(() => readPharmacistChatHistory(pharmacistSession.userId));
   const [isCompactMode, setIsCompactMode] = useState(false);
+  const [streamAbortController, setStreamAbortController] = useState(null);
+  const [streamRequestId, setStreamRequestId] = useState('');
+  const [agentWorkHistory, setAgentWorkHistory] = useState([]);
 
   useEffect(() => {
     persistPharmacistChatHistory(pharmacistSession.userId, conversationHistory);
@@ -175,9 +178,8 @@ export default function PharmacistChatPage({ pharmacistSession }) {
     setError('');
     setMessageInfo('');
     setChatTurns([]);
-    setActiveAssistantBaseIndex(
-      conversationMessages.filter((item) => item?.role === 'assistant').length
-    );
+    const assistantBaseIndexSnapshot = conversationMessages.filter((item) => item?.role === 'assistant').length;
+    setActiveAssistantBaseIndex(assistantBaseIndexSnapshot);
 
     if (optimisticUserMessage) {
       setConversationMessages((current) => [
@@ -197,6 +199,8 @@ export default function PharmacistChatPage({ pharmacistSession }) {
       conversationId: targetConversationId || '',
     };
 
+    const abortController = new AbortController();
+    setStreamAbortController(abortController);
     setIsSending(true);
     try {
       const response = await chatWithOrchestratorStream(
@@ -207,6 +211,10 @@ export default function PharmacistChatPage({ pharmacistSession }) {
           metadata: resumePartial ? { resume_partial: true } : {},
         },
         (event) => {
+          if (event?.type === 'started' && typeof event?.request_id === 'string') {
+            setStreamRequestId(event.request_id);
+            return;
+          }
           if (event?.type === 'tool_call') {
             appendStreamedToolCall(event);
             return;
@@ -241,12 +249,25 @@ export default function PharmacistChatPage({ pharmacistSession }) {
               });
             }
           }
+        },
+        {
+          signal: abortController.signal,
         }
       );
 
       const resolvedConversationId = response.conversation_id || targetConversationId || '';
       setConversationId(resolvedConversationId);
       setChatTurns(response.turns || []);
+      const assistantMessages = (conversationMessages || []).filter((item) => item?.role === 'assistant');
+      const assistantSlice = assistantMessages.slice(assistantBaseIndexSnapshot);
+      setAgentWorkHistory((current) => [
+        ...current,
+        {
+          assistantBaseIndex: assistantBaseIndexSnapshot,
+          turns: response.turns || [],
+          assistantMessages: assistantSlice,
+        },
+      ]);
       setMessageInfo(`Conversation ID: ${response.conversation_id}`);
       const turnList = response.turns || [];
       const lastTurn = turnList[turnList.length - 1];
@@ -270,6 +291,10 @@ export default function PharmacistChatPage({ pharmacistSession }) {
       setUserProfile(refreshedProfile);
       setLastFailedRequest(null);
     } catch (sendError) {
+      if (sendError?.name === 'AbortError') {
+        setMessageInfo('Request cancelled');
+        return;
+      }
       setLastFailedRequest(failedRequestContext);
       if (sendError instanceof Error) {
         setError(sendError.message);
@@ -277,7 +302,19 @@ export default function PharmacistChatPage({ pharmacistSession }) {
         setError('Could not send message');
       }
     } finally {
+      setChatTurns([]);
+      setStreamRequestId('');
+      setStreamAbortController(null);
       setIsSending(false);
+    }
+  }
+
+  function stopActiveRequest() {
+    if (streamRequestId) {
+      cancelOrchestratorStream(pharmacistSession.userId, streamRequestId).catch(() => null);
+    }
+    if (streamAbortController) {
+      streamAbortController.abort();
     }
   }
 
@@ -347,6 +384,7 @@ export default function PharmacistChatPage({ pharmacistSession }) {
       setConversationMessages(response.messages || []);
       setActiveAssistantBaseIndex(0);
       setChatTurns([]);
+      setAgentWorkHistory([]);
       setMessageInfo(`Conversation ID: ${targetConversationId}`);
     } catch (openError) {
       if (openError instanceof Error) {
@@ -362,6 +400,7 @@ export default function PharmacistChatPage({ pharmacistSession }) {
     setConversationMessages([]);
     setActiveAssistantBaseIndex(0);
     setChatTurns([]);
+    setAgentWorkHistory([]);
     setQuestion('');
     setMessageInfo('New conversation draft');
   }
@@ -417,6 +456,7 @@ export default function PharmacistChatPage({ pharmacistSession }) {
             <ChatTimeline
               conversationMessages={conversationMessages}
               chatTurns={chatTurns}
+              agentWorkHistory={agentWorkHistory}
               assistantBaseIndex={activeAssistantBaseIndex}
               hasLiveTrace={hasLiveTrace}
               isSending={isSending}
@@ -434,6 +474,7 @@ export default function PharmacistChatPage({ pharmacistSession }) {
               onResumeLastRequest={resumeLastFailedRequest}
               onReload={reloadConversation}
               hasConversationId={Boolean(conversationId)}
+              onStop={stopActiveRequest}
             />
           </div>
         </div>

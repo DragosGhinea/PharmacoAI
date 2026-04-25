@@ -33,6 +33,72 @@ mcp = FastMCP(
 )
 
 
+@mcp.tool(
+    title="Medication Analysis",
+    description="Decide if a request must trigger the medication evidence pipeline.",
+)
+def medication_analysis(message: str, triage_output: str | None = None, caller_id: str = "anonymous") -> dict[str, Any]:
+    blocked = _preflight("medication_analysis", caller_id, "informational")
+    if blocked:
+        return blocked
+
+    intent = "general"
+    confidence = 0.4
+    rationale = "No medication intent detected."
+    medication_name = ""
+
+    if triage_output:
+        try:
+            parsed = json.loads(triage_output)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, dict):
+            raw_intent = str(parsed.get("intent") or "").strip().lower()
+            if raw_intent in {"medication", "general", "unclear"}:
+                intent = raw_intent
+            confidence_val = parsed.get("confidence")
+            if isinstance(confidence_val, (int, float)):
+                confidence = max(0.0, min(float(confidence_val), 1.0))
+            rationale = str(parsed.get("rationale") or rationale).strip() or rationale
+            medication_name = str(parsed.get("medication_name") or "").strip()
+
+    message_lower = message.lower()
+    medication_keywords = [
+        "medication",
+        "medicament",
+        "drug",
+        "medicine",
+        "pastila",
+        "tableta",
+        "doza",
+        "interactiuni",
+        "contraind",
+        "reaction",
+        "efecte adverse",
+    ]
+    if any(keyword in message_lower for keyword in medication_keywords):
+        if intent == "general":
+            intent = "unclear"
+        confidence = max(confidence, 0.55)
+
+    needs_name = intent == "medication" and not medication_name
+    if needs_name:
+        rationale = "Medication intent detected but no medication name provided."
+
+    trigger = intent == "medication" and not needs_name
+    data = {
+        "intent": intent,
+        "confidence": confidence,
+        "trigger_medication_flow": trigger,
+        "rationale": rationale,
+        "medication_name": medication_name,
+        "needs_medication_name": needs_name,
+    }
+    result = _envelope(ok=True, risk_tier="informational", data=data)
+    log_audit("medication_analysis", caller_id, "success", "informational", metadata=data)
+    return result
+
+
 def _name_candidates(name: str) -> list[str]:
     base = normalize_token(name)
     if not base:

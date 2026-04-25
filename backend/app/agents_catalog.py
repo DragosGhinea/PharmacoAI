@@ -10,6 +10,26 @@ from .agents_schemas import AgentDefinition, AgentProvider
 def default_agent_definitions() -> list[AgentDefinition]:
     return [
         AgentDefinition(
+            id="pharmacist-general-agent",
+            name="Pharmacist General Assistant",
+            description=(
+                "Handles general pharmacist workflow questions and clarifies user intent when no medication-specific "
+                "pipeline is required."
+            ),
+            provider=AgentProvider.GEMINI,
+            model="gemini-3-flash-preview",
+            system_prompt=(
+                "You are a helpful pharmacist assistant. If the user question is not about a specific medication, "
+                "respond conversationally, clarify intent, and keep the interaction focused on pharmacy workflows, "
+                "patient counseling, safety, and evidence-based practice. If the user needs medication-specific help, "
+                "return an INTENT_JSON line with intent=medication and include medication_name when possible."
+            ),
+            api_key_env="GEMINI_API_KEY_1",
+            style_tags=["basic-assistant"],
+            risk_tier="informational",
+            temperature=0.3,
+        ),
+        AgentDefinition(
             id="medication-normalization-agent",
             name="Medication Normalization Agent",
             description=(

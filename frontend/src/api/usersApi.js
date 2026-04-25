@@ -173,7 +173,7 @@ export function chatWithOrchestrator(userId, payload) {
   });
 }
 
-export async function chatWithOrchestratorStream(userId, payload, onEvent) {
+export async function chatWithOrchestratorStream(userId, payload, onEvent, options = {}) {
   const response = await fetch(`${API_BASE_URL}/agents/chat/stream`, {
     method: 'POST',
     headers: {
@@ -181,6 +181,7 @@ export async function chatWithOrchestratorStream(userId, payload, onEvent) {
       'X-User-Id': userId,
     },
     body: JSON.stringify(payload),
+    signal: options?.signal,
   });
 
   if (!response.ok) {
@@ -272,6 +273,16 @@ export async function chatWithOrchestratorStream(userId, payload, onEvent) {
   }
 
   return finalData;
+}
+
+export function cancelOrchestratorStream(userId, requestId) {
+  return apiRequest('/agents/chat/stream/cancel', {
+    method: 'POST',
+    headers: {
+      'X-User-Id': userId,
+    },
+    body: JSON.stringify({ request_id: requestId }),
+  });
 }
 
 export function handoffAgents(userId, payload) {

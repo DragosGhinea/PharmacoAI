@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from time import perf_counter
 from datetime import datetime, timezone
+from uuid import uuid4
 
 from fastapi import HTTPException, status
 from fastapi import Depends, FastAPI, Request
@@ -24,6 +25,7 @@ from .agents_schemas import (
     AgentDefinition,
     AgentHandoffRequest,
     AgentListResponse,
+    StreamCancelRequest,
 )
 from .agents_service import AgentsService
 from .auth import get_current_user, require_admin
@@ -271,6 +273,7 @@ async def chat_with_orchestrator_stream(
     service: AgentsService = Depends(get_agents_service),
 ) -> StreamingResponse:
     queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+    request_id = str(uuid4())
 
     def on_tool_event(event: dict[str, object]) -> None:
         event_type = str(event.get("event_type") or "tool_call")
@@ -284,6 +287,8 @@ async def chat_with_orchestrator_stream(
                 on_tool_event=on_tool_event,
             )
             await queue.put({"type": "final", "data": result.model_dump(mode="json")})
+        except asyncio.CancelledError:
+            return
         except HTTPException as exc:
             detail = exc.detail
             if isinstance(detail, str) and detail.strip():
@@ -295,9 +300,12 @@ async def chat_with_orchestrator_stream(
             message = str(exc).strip() or f"{exc.__class__.__name__} during orchestrator stream"
             await queue.put({"type": "error", "message": message})
         finally:
+            service.clear_stream_task(request_id=request_id)
             await queue.put({"type": "done"})
 
     task = asyncio.create_task(run_chat())
+    service.register_stream_task(request_id=request_id, user_id=current_user.id, task=task)
+    queue.put_nowait({"type": "started", "request_id": request_id})
 
     async def event_stream() -> object:
         try:
@@ -321,6 +329,18 @@ async def chat_with_orchestrator_stream(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@app.post("/agents/chat/stream/cancel")
+def cancel_chat_stream(
+    payload: StreamCancelRequest,
+    current_user: UserRecord = Depends(get_current_user),
+    service: AgentsService = Depends(get_agents_service),
+) -> dict[str, str]:
+    cancelled = service.cancel_stream_task(request_id=payload.request_id, user_id=current_user.id)
+    if not cancelled:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Stream not found")
+    return {"status": "cancelled"}
 
 
 @app.post("/agents/handoff", response_model=AgentChatResponse)

@@ -15,6 +15,7 @@ def _serialize(value: Any) -> str:
 
 def call_mcp_tool(tool_name: str, *, args: dict[str, Any], caller_id: str) -> dict[str, Any]:
     tool_map = {
+        "medication_analysis": mcp_server.medication_analysis,
         "normalize_medication_name": mcp_server.normalize_medication_name,
         "search_medication_facts": mcp_server.search_medication_facts,
         "search_medication_indications": mcp_server.search_medication_indications,

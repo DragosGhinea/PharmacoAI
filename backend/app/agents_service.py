@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timezone
 import unicodedata
 import re
@@ -33,6 +34,7 @@ class AgentsService:
         self._conversations: dict[str, AgentConversation] = {}
         self._tool_history: dict[str, list[str]] = {}
         self._tool_calls_by_message: dict[str, dict[str, list[dict[str, Any]]]] = {}
+        self._stream_tasks: dict[str, tuple[str, asyncio.Task[None]]] = {}
         self._lock = Lock()
 
     def list_agents(self) -> list[AgentDefinition]:
@@ -78,10 +80,167 @@ class AgentsService:
         payload: AgentChatRequest,
         on_tool_event: Callable[[dict[str, Any]], None] | None = None,
     ) -> AgentChatResponse:
-        chain = self._build_orchestration_chain(user=user, payload=payload)
-        return await self._chat_with_chain(user=user, payload=payload, chain=chain, on_tool_event=on_tool_event)
+        general_agent = self.get_agent_for_user(user=user, agent_id="pharmacist-general-agent")
+        triage_prompt = (
+            "Return INTENT_JSON on the first line with keys: intent (medication|general|unclear), "
+            "confidence (0-1), rationale, medication_name (optional). Then a blank line, then RESPONSE. "
+            "If intent is medication, still write a short acknowledgement in RESPONSE.\n\n"
+            f"User message: {payload.message}"
+        )
+        conversation = self._get_or_create_conversation(
+            payload.conversation_id,
+            participants=[general_agent.id, user.id],
+        )
+        triage_response = await self._invoke_agent_with_history_prompt(
+            agent=general_agent,
+            conversation_id=conversation.conversation_id,
+            prompt=triage_prompt,
+        )
+        triage_payload, general_response = self._extract_intent_payload(triage_response)
+        triage_call = call_mcp_tool(
+            "medication_analysis",
+            args={
+                "message": payload.message,
+                "triage_output": json.dumps(triage_payload, ensure_ascii=True),
+            },
+            caller_id=user.id,
+        )
+        triage_data = triage_call.get("output") if isinstance(triage_call, dict) else None
+        triage_payload = triage_data.get("data", {}) if isinstance(triage_data, dict) else {}
+        trigger_medication_flow = bool(triage_payload.get("trigger_medication_flow"))
+        medication_name = str(triage_payload.get("medication_name") or "").strip()
 
-    def _build_orchestration_chain(self, *, user: UserRecord, payload: AgentChatRequest) -> list[str]:
+        if on_tool_event:
+            on_tool_event(
+                {
+                    "event_type": "step_started",
+                    "turn_index": 0,
+                    "agent_id": general_agent.id,
+                    "stage_input": payload.message,
+                    "message": f"Starting {general_agent.name}",
+                }
+            )
+            on_tool_event(
+                {
+                    "event_type": "tool_call",
+                    "turn_index": 0,
+                    "agent_id": general_agent.id,
+                    "call": triage_call,
+                }
+            )
+            on_tool_event(
+                {
+                    "event_type": "step_completed",
+                    "turn_index": 0,
+                    "agent_id": general_agent.id,
+                    "stage_output": general_response or triage_response,
+                    "next_stage_input": payload.message,
+                    "message": f"Completed {general_agent.name}",
+                }
+            )
+
+        triage_turn = AgentChatTurn(
+            agent_id=general_agent.id,
+            received_input=payload.message,
+            response=general_response or triage_response,
+            provider=general_agent.provider,
+            model=general_agent.model,
+            thought_summary="Intent triage via medication_analysis",
+            mcp_tool_calls=[triage_call],
+            clinician_summary=general_response or triage_response,
+            patient_summary=general_response or triage_response,
+            evidence_snippets=[],
+            source_links=[],
+        )
+
+        if trigger_medication_flow:
+            if medication_name:
+                payload.metadata = {
+                    **(payload.metadata if isinstance(payload.metadata, dict) else {}),
+                    "medication_name": medication_name,
+                    "force_medication": True,
+                }
+            grounded_context = await self._build_grounding_context(payload)
+            chain = [
+                "medication-normalization-agent",
+                "medication-evidence-gathering-agent",
+                "medication-answer-synthesis-agent",
+                "layman-translator-agent",
+            ]
+        else:
+            grounded_context = {"evidence_snippets": [], "source_links": [], "metadata": payload.metadata}
+            conversation = self._get_or_create_conversation(
+                payload.conversation_id,
+                participants=[general_agent.id, user.id],
+            )
+            if not self._resolve_resume_anchor(conversation=conversation, user_id=user.id, payload=payload):
+                self._append_message(
+                    conversation.conversation_id,
+                    AgentMessage(
+                        role="user",
+                        content=payload.message,
+                        sender=user.id,
+                        timestamp=_utcnow(),
+                    ),
+                )
+            self._append_message(
+                conversation.conversation_id,
+                AgentMessage(
+                    role="assistant",
+                    content=general_response or triage_response,
+                    sender=general_agent.id,
+                    timestamp=_utcnow(),
+                ),
+            )
+            return AgentChatResponse(
+                conversation_id=conversation.conversation_id,
+                final_agent_id=general_agent.id,
+                final_response=general_response or triage_response,
+                clinician_summary=general_response or triage_response,
+                patient_summary=general_response or triage_response,
+                evidence_snippets=[],
+                source_links=[],
+                turns=[triage_turn],
+            )
+
+        response = await self._chat_with_chain(
+            user=user,
+            payload=payload,
+            chain=chain,
+            on_tool_event=on_tool_event,
+            grounded_context=grounded_context,
+            turn_index_offset=1,
+        )
+        response.turns.insert(0, triage_turn)
+        return response
+
+    def register_stream_task(self, *, request_id: str, user_id: str, task: asyncio.Task[None]) -> None:
+        with self._lock:
+            self._stream_tasks[request_id] = (user_id, task)
+
+    def clear_stream_task(self, *, request_id: str) -> None:
+        with self._lock:
+            self._stream_tasks.pop(request_id, None)
+
+    def cancel_stream_task(self, *, request_id: str, user_id: str) -> bool:
+        with self._lock:
+            item = self._stream_tasks.get(request_id)
+        if not item:
+            return False
+        owner_id, task = item
+        if owner_id != user_id:
+            return False
+        if not task.done():
+            task.cancel()
+        return True
+
+    def _build_orchestration_chain(
+        self,
+        *,
+        user: UserRecord,
+        payload: AgentChatRequest,
+        grounded_context: dict[str, Any],
+    ) -> list[str]:
         available_agents = [agent.id for agent in self.list_agents_for_user(user=user)]
         if not available_agents:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No agents available for the user's tier")
@@ -91,12 +250,15 @@ class AgentsService:
             if agent_id in available_agents and agent_id not in chain:
                 chain.append(agent_id)
 
-        # Preferred explicit pipeline:
-        # 1) normalization/neighbors -> 2) evidence gathering -> 3) synthesis -> 4) layman rewrite.
-        _add("medication-normalization-agent")
-        _add("medication-evidence-gathering-agent")
-        _add("medication-answer-synthesis-agent")
-        _add("layman-translator-agent")
+        if not self._has_medication_intent(grounded_context):
+            _add("pharmacist-general-agent")
+        else:
+            # Preferred explicit pipeline:
+            # 1) normalization/neighbors -> 2) evidence gathering -> 3) synthesis -> 4) layman rewrite.
+            _add("medication-normalization-agent")
+            _add("medication-evidence-gathering-agent")
+            _add("medication-answer-synthesis-agent")
+            _add("layman-translator-agent")
 
         # Compatibility fallback if any dedicated stage agent is unavailable.
         if not chain:
@@ -109,6 +271,17 @@ class AgentsService:
 
         return chain
 
+    def _has_medication_intent(self, grounded_context: dict[str, Any]) -> bool:
+        if not isinstance(grounded_context, dict):
+            return False
+        metadata = grounded_context.get("metadata", {})
+        if isinstance(metadata, dict):
+            if str(metadata.get("medication_name") or "").strip():
+                return True
+            if metadata.get("force_medication") is True:
+                return True
+        return self._grounding_has_signal(grounded_context)
+
     async def _chat_with_chain(
         self,
         *,
@@ -116,6 +289,8 @@ class AgentsService:
         payload: AgentChatRequest,
         chain: list[str],
         on_tool_event: Callable[[dict[str, Any]], None] | None = None,
+        grounded_context: dict[str, Any] | None = None,
+        turn_index_offset: int = 0,
     ) -> AgentChatResponse:
         if not chain:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Agent chain cannot be empty")
@@ -123,7 +298,8 @@ class AgentsService:
         first_agent = self.get_agent_for_user(user=user, agent_id=chain[0])
         conversation = self._get_or_create_conversation(payload.conversation_id, participants=[first_agent.id, user.id, *chain])
 
-        grounded_context = await self._build_grounding_context(payload)
+        if grounded_context is None:
+            grounded_context = await self._build_grounding_context(payload)
 
         resume_anchor_idx = self._resolve_resume_anchor(conversation=conversation, user_id=user.id, payload=payload)
         is_resuming_partial = resume_anchor_idx is not None
@@ -172,7 +348,7 @@ class AgentsService:
                 on_tool_event(
                     {
                         "event_type": "step_started",
-                        "turn_index": idx,
+                        "turn_index": idx + turn_index_offset,
                         "agent_id": current_agent.id,
                         "stage_input": stage_input,
                         "message": f"Starting {current_agent.name}",
@@ -189,7 +365,7 @@ class AgentsService:
                         lambda call, idx=idx, aid=current_agent.id: on_tool_event(
                             {
                                 "event_type": "tool_call",
-                                "turn_index": idx,
+                                "turn_index": idx + turn_index_offset,
                                 "agent_id": aid,
                                 "call": call,
                             }
@@ -266,7 +442,7 @@ class AgentsService:
                 on_tool_event(
                     {
                         "event_type": "step_completed",
-                        "turn_index": idx,
+                        "turn_index": idx + turn_index_offset,
                         "agent_id": current_agent.id,
                         "stage_output": response,
                         "next_stage_input": response,
@@ -548,6 +724,66 @@ class AgentsService:
             mcp_tool_calls=list(grounded_context.get("mcp_tool_calls", [])),
         )
 
+    async def _invoke_agent_with_prompt(self, *, agent: AgentDefinition, prompt: str) -> str:
+        provider_client = get_provider_client(agent.provider)
+        messages = [
+            {
+                "role": "system",
+                "content": agent.system_prompt,
+            },
+            {
+                "role": "user",
+                "content": prompt,
+            },
+        ]
+        response = await provider_client.generate(agent, messages)
+        if not self._is_empty_provider_response(response):
+            return response
+        return "{\"intent\": \"general\", \"confidence\": 0.3, \"rationale\": \"No response\"}"
+
+    async def _invoke_agent_with_history_prompt(
+        self,
+        *,
+        agent: AgentDefinition,
+        conversation_id: str,
+        prompt: str,
+    ) -> str:
+        provider_client = get_provider_client(agent.provider)
+        messages = self._build_messages(
+            agent=agent,
+            conversation_id=conversation_id,
+            grounded_context={"evidence_snippets": [], "source_links": [], "metadata": {}},
+        )
+        messages.append({"role": "user", "content": prompt})
+        response = await provider_client.generate(agent, messages)
+        if not self._is_empty_provider_response(response):
+            return response
+        return "{\"intent\": \"general\", \"confidence\": 0.3, \"rationale\": \"No response\"}"
+
+    def _extract_intent_payload(self, response: str) -> tuple[dict[str, Any], str]:
+        if not isinstance(response, str):
+            return {}, ""
+        lines = [line for line in response.splitlines() if line.strip()]
+        if not lines:
+            return {}, ""
+        first = lines[0].strip()
+        payload: dict[str, Any] = {}
+        remaining = "\n".join(lines[1:]).strip()
+
+        if first.lower().startswith("intent_json"):
+            first = first.split(":", 1)[-1].strip()
+
+        if first.startswith("{") and first.endswith("}"):
+            try:
+                parsed = json.loads(first)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, dict):
+                payload = parsed
+        if not payload:
+            remaining = response.strip()
+        return payload, remaining
+
     def _build_messages(
         self,
         *,
@@ -744,6 +980,14 @@ class AgentsService:
                     grounded = trial
                     selected_query = candidate
                     break
+
+        if not self._grounding_has_signal(grounded):
+            return {
+                "evidence_snippets": [],
+                "source_links": [],
+                "metadata": payload.metadata,
+                "medication_guess": raw_name,
+            }
 
         grounded["original_query"] = raw_name
         grounded["selected_query"] = selected_query

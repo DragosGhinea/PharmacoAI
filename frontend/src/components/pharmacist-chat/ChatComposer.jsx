@@ -9,6 +9,7 @@ export default function ChatComposer({
   onResumeLastRequest,
   onReload,
   hasConversationId,
+  onStop,
 }) {
   return (
     <form className="space-y-1.5 mt-1.5" onSubmit={onSubmit}>
@@ -25,6 +26,14 @@ export default function ChatComposer({
         placeholder="Example: Ce stii despre metamizol? verifica interactiunile si explica pe intelesul pacientului."
         value={question}
         onChange={(event) => onQuestionChange(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' && !event.shiftKey) {
+            event.preventDefault();
+            if (!isSending && !isLimitReached && typeof onSubmit === 'function') {
+              onSubmit({ preventDefault: () => {} });
+            }
+          }
+        }}
         rows={2}
       />
 
@@ -35,6 +44,14 @@ export default function ChatComposer({
           disabled={isSending || isLimitReached}
         >
           {isSending ? 'Sending...' : 'Ask Agent'}
+        </button>
+        <button
+          className="px-3 py-1.5 rounded-lg text-[11px] font-bold border border-error/50 bg-error/10 text-error disabled:opacity-50"
+          type="button"
+          onClick={onStop}
+          disabled={!isSending}
+        >
+          Stop
         </button>
         {hasFailedRequest && (
           <button
