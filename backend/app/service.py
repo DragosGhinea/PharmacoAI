@@ -6,7 +6,7 @@ from fastapi import HTTPException, status
 
 from .repository import UserRepository
 from .schemas import MessageSimulationResponse, UserCreate, UserRecord, UserUpdate, utcnow
-from .tiers import TIER_FEATURES
+from .tiers import TIER_FEATURES, Tier
 
 DEFAULT_ADMIN_PASSWORD = "pharmacoai123"
 
@@ -17,6 +17,14 @@ class UserService:
 
     def list_users(self) -> list[UserRecord]:
         return self.repository.list_users()
+
+    def list_users_for_admin(self, admin_user_id: str) -> list[UserRecord]:
+        users = self.repository.list_users()
+        return [
+            user
+            for user in users
+            if user.role == "pharmacist" and user.owner_admin_id == admin_user_id
+        ]
 
     def get_user(self, user_id: str) -> UserRecord:
         user = self._find_by_id(user_id)
@@ -37,14 +45,53 @@ class UserService:
             id=f"usr-{uuid4().hex[:10]}",
             email=payload.email,
             full_name=payload.full_name,
-            role=payload.role,
-            tier=payload.tier,
+            role="pharmacist",
+            tier=Tier.FREE,
             is_active=payload.is_active,
             password=payload.password,
             monthly_messages_used=0,
             created_at=now,
             updated_at=now,
         )
+        users.append(user)
+        self.repository.save_users(users)
+        return user
+
+    def create_user_for_admin(self, admin_user: UserRecord, payload: UserCreate) -> UserRecord:
+        users = self.repository.list_users()
+
+        if any(existing.email.lower() == payload.email.lower() for existing in users):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A user with this email already exists",
+            )
+
+        admin_tier_features = TIER_FEATURES[admin_user.tier]
+        admin_user_limit = int(admin_tier_features["admin_user_limit"])
+        owned_users = [
+            user for user in users if user.role == "pharmacist" and user.owner_admin_id == admin_user.id
+        ]
+        if len(owned_users) >= admin_user_limit:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Your plan allows up to {admin_user_limit} pharmacist users",
+            )
+
+        now = utcnow()
+        user = UserRecord(
+            id=f"usr-{uuid4().hex[:10]}",
+            email=payload.email,
+            full_name=payload.full_name,
+            role="pharmacist",
+            tier=admin_user.tier,
+            is_active=payload.is_active,
+            password=payload.password,
+            owner_admin_id=admin_user.id,
+            monthly_messages_used=0,
+            created_at=now,
+            updated_at=now,
+        )
+
         users.append(user)
         self.repository.save_users(users)
         return user
@@ -72,11 +119,51 @@ class UserService:
         self.repository.save_users(users)
         return merged
 
+    def update_user_for_admin(self, admin_user: UserRecord, user_id: str, payload: UserUpdate) -> UserRecord:
+        users = self.repository.list_users()
+        idx = next((i for i, user in enumerate(users) if user.id == user_id), None)
+        if idx is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+        current = users[idx]
+        if current.role != "pharmacist" or current.owner_admin_id != admin_user.id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+
+        updates = payload.model_dump(exclude_none=True)
+        updates.pop("role", None)
+        updates["tier"] = admin_user.tier
+
+        if "email" in updates:
+            email_value = str(updates["email"])
+            for other in users:
+                if other.id != current.id and other.email.lower() == email_value.lower():
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail="A user with this email already exists",
+                    )
+
+        merged = current.model_copy(update={**updates, "updated_at": utcnow()})
+        users[idx] = merged
+        self.repository.save_users(users)
+        return merged
+
     def delete_user(self, user_id: str) -> None:
         users = self.repository.list_users()
         filtered = [user for user in users if user.id != user_id]
         if len(filtered) == len(users):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        self.repository.save_users(filtered)
+
+    def delete_user_for_admin(self, admin_user: UserRecord, user_id: str) -> None:
+        users = self.repository.list_users()
+        target = next((user for user in users if user.id == user_id), None)
+        if target is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+        if target.role != "pharmacist" or target.owner_admin_id != admin_user.id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+
+        filtered = [user for user in users if user.id != user_id]
         self.repository.save_users(filtered)
 
     def simulate_message(self, user_id: str, prompt: str) -> MessageSimulationResponse:

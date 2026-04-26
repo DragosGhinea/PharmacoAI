@@ -1,0 +1,35 @@
+[33mcommit af5157935e26efd9a826df076ecebc65f407c0c8[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m
+Merge: 5df151a 176866f
+Author: Cucu Raul - MIhai <94838050+CucuRaulMihai@users.noreply.github.com>
+Date:   Fri Apr 17 22:27:57 2026 +0300
+
+    Merge pull request #2 from DragosGhinea/Users
+    
+    Users, Admin - basic CRUD for both, agent selector, FE pages
+
+[33mcommit 176866f9723d2729d65d3c5feae0f236774854a6[m[33m ([m[1;31morigin/Users[m[33m)[m
+Author: Cucu Raul - Mihai <raul.cucu02@e-uvt.ro>
+Date:   Fri Apr 17 22:09:22 2026 +0300
+
+    Users, Admin - basic CRUD for both, agent selector, FE pages
+
+[33mcommit 5df151abba9647ef5d7886e644d7158a36e54fd7[m
+Merge: 24407a9 61bec27
+Author: Cucu Raul - MIhai <94838050+CucuRaulMihai@users.noreply.github.com>
+Date:   Fri Apr 17 20:09:42 2026 +0300
+
+    Merge pull request #1 from DragosGhinea/Landing-page
+    
+    Landing page as discussed.
+
+[33mcommit 61bec277019f963149c50dd4c435f0d42b9fc697[m[33m ([m[1;31morigin/Landing-page[m[33m)[m
+Author: Cucu Raul - Mihai <raul.cucu02@e-uvt.ro>
+Date:   Fri Apr 17 19:57:40 2026 +0300
+
+    Landing page as discussed.
+
+[33mcommit 24407a9dc4ecfa8b63b621b7d2afd8ff9556bf95[m
+Author: Dragos Dumitru Ghinea <dragos.dev12@gmail.com>
+Date:   Wed Apr 15 12:04:02 2026 +0300
+
+    Initial commit

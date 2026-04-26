@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 
-import { changeMyPassword, getMyUser, loginUser, sendUserMessage } from './api/usersApi';
+import { changeMyPassword, createSubscriptionCheckout, getMyUser, loginUser, sendUserMessage } from './api/usersApi';
 import AdminUsersPanel from './components/AdminUsersPanel';
 
 const ADMIN_SESSION_KEY = 'pharmacoai_admin_session';
@@ -616,7 +616,76 @@ function PharmacistAccountPage({ pharmacistSession, onLogout, onSessionRefresh }
   );
 }
 
-function LandingPageContent() {
+const SUBSCRIPTION_PLANS = [
+  {
+    tier: 'free',
+    name: 'Free',
+    priceLabel: '$0',
+    cadence: '/month',
+    tagline: 'For solo pharmacies getting started',
+    userLimit: '1 admin user',
+    messageLimit: '150 messages/month',
+    agents: ['Drug Explainer'],
+    cardClass: 'bg-white border-slate-200',
+    buttonClass: 'bg-slate-900 text-white hover:bg-slate-700',
+  },
+  {
+    tier: 'pro',
+    name: 'Pro',
+    priceLabel: '$99',
+    cadence: '/month',
+    tagline: 'For pharmacies scaling clinical throughput',
+    userLimit: 'Up to 8 users',
+    messageLimit: '3,000 messages/month',
+    agents: ['Drug Explainer', 'Ingredient Analyst', 'Summary Agent'],
+    cardClass: 'bg-emerald-50 border-emerald-300',
+    buttonClass: 'bg-emerald-700 text-white hover:bg-emerald-600',
+  },
+  {
+    tier: 'ultimate',
+    name: 'Ultimate',
+    priceLabel: '$299',
+    cadence: '/month',
+    tagline: 'For enterprise pharmacies with large teams',
+    userLimit: 'Up to 50 users',
+    messageLimit: '20,000 messages/month',
+    agents: ['Drug Explainer', 'Ingredient Analyst', 'Summary Agent'],
+    cardClass: 'bg-amber-50 border-amber-300',
+    buttonClass: 'bg-amber-700 text-white hover:bg-amber-600',
+  },
+];
+
+function resolveSelectedPlan() {
+  if (typeof window === 'undefined') {
+    return SUBSCRIPTION_PLANS[1];
+  }
+
+  const params = new URLSearchParams(window.location.search);
+  const requestedTier = params.get('plan') ?? 'pro';
+  return SUBSCRIPTION_PLANS.find((plan) => plan.tier === requestedTier) ?? SUBSCRIPTION_PLANS[1];
+}
+
+function buildAdminLoginRedirectUrl(targetPath) {
+  const encodedTarget = encodeURIComponent(targetPath);
+  return `/admin?redirect=${encodedTarget}`;
+}
+
+function LandingPageContent({ adminSession }) {
+  const checkoutStatus =
+    typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('checkout') : null;
+
+  function goToSignup(tier) {
+    if (typeof window !== 'undefined') {
+      const checkoutPath = `/subscribe?plan=${tier}`;
+      if (!adminSession) {
+        window.location.href = buildAdminLoginRedirectUrl(checkoutPath);
+        return;
+      }
+
+      window.location.href = checkoutPath;
+    }
+  }
+
   return (
     <main>
       <section className="relative pt-24 pb-32 px-8 overflow-hidden">
@@ -803,25 +872,178 @@ function LandingPageContent() {
       </section>
 
       <section className="py-20 px-8">
-        <div className="max-w-5xl mx-auto bg-primary-container rounded-[2.5rem] p-12 md:p-20 text-center relative overflow-hidden">
+        <div className="max-w-7xl mx-auto bg-primary-container rounded-[2.5rem] p-8 md:p-14 relative overflow-hidden">
           <div className="relative z-10">
-            <h2 className="text-4xl md:text-5xl font-bold text-white mb-6">Ready to upgrade your pharmacy&apos;s intelligence?</h2>
-            <p className="text-on-primary-container text-lg mb-10 max-w-2xl mx-auto">
-              Join the 500+ clinical institutions leveraging PharmacoAI to drive better patient outcomes through automation.
+            <h2 className="text-4xl md:text-5xl font-bold text-white mb-4">Ready to upgrade your pharmacy&apos;s intelligence?</h2>
+            <p className="text-on-primary-container text-lg mb-10 max-w-3xl">
+              Choose a plan and provide your billing details. You will be redirected to Stripe checkout.
             </p>
-            <div className="flex flex-col sm:flex-row gap-4 justify-center">
-              <button className="bg-secondary text-white px-10 py-4 rounded-2xl font-bold text-lg hover:bg-on-secondary-container transition-colors shadow-lg shadow-secondary/20" type="button">
-                Request Demo
-              </button>
-              <button className="bg-white/10 text-white backdrop-blur-md px-10 py-4 rounded-2xl font-bold text-lg hover:bg-white/20 transition-colors" type="button">
-                Contact Sales
-              </button>
+
+            {checkoutStatus === 'success' && (
+              <p className="mb-6 rounded-xl bg-emerald-500/20 border border-emerald-300/40 text-white px-4 py-3 text-sm font-semibold">
+                Subscription flow completed successfully.
+              </p>
+            )}
+
+            <div className="grid md:grid-cols-3 gap-5 mb-6">
+              {SUBSCRIPTION_PLANS.map((plan) => (
+                <article key={plan.tier} className={`rounded-3xl border p-6 shadow-sm ${plan.cardClass}`}>
+                  <p className="text-[11px] uppercase tracking-[0.2em] text-slate-700 font-bold">{plan.name}</p>
+                  <p className="text-4xl text-slate-900 font-bold mt-3">
+                    {plan.priceLabel}
+                    <span className="text-sm text-slate-600">{plan.cadence}</span>
+                  </p>
+                  <p className="text-sm text-slate-700 mt-3 mb-4">{plan.tagline}</p>
+                  <ul className="space-y-2 mb-6">
+                    <li className="text-sm text-slate-700">{plan.userLimit}</li>
+                    <li className="text-sm text-slate-700">{plan.messageLimit}</li>
+                    <li className="text-sm text-slate-700">{plan.agents.length} included agent(s)</li>
+                  </ul>
+                  <button
+                    className={`w-full rounded-xl py-2.5 text-sm font-bold transition-colors ${plan.buttonClass}`}
+                    type="button"
+                    onClick={() => goToSignup(plan.tier)}
+                  >
+                    Choose {plan.name}
+                  </button>
+                </article>
+              ))}
             </div>
+
+            <p className="text-sm text-on-primary-container mb-1">
+              Every user can buy a custom number of extra messages at any time, regardless of subscription plan.
+            </p>
+            <p className="text-xs text-on-primary-container/80">Top-ups are handled as add-ons to your active subscription.</p>
           </div>
+
           <div className="absolute inset-0 -z-0 opacity-10">
             <div className="absolute top-0 left-0 w-64 h-64 bg-secondary rounded-full blur-[100px]"></div>
             <div className="absolute bottom-0 right-0 w-64 h-64 bg-primary-fixed rounded-full blur-[100px]"></div>
           </div>
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function SubscriptionSignupPage({ adminSession }) {
+  const selectedPlan = resolveSelectedPlan();
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [subscriptionError, setSubscriptionError] = useState('');
+
+  useEffect(() => {
+    if (!adminSession && typeof window !== 'undefined') {
+      const currentPath = `${window.location.pathname}${window.location.search}`;
+      window.location.href = buildAdminLoginRedirectUrl(currentPath);
+    }
+  }, [adminSession]);
+
+  async function handleStartCheckout(event) {
+    event.preventDefault();
+    setSubscriptionError('');
+
+    if (!adminSession?.userId) {
+      setSubscriptionError('Please log in as an admin to continue with payment.');
+      return;
+    }
+
+    setIsSubmitting(true);
+
+    try {
+      const response = await createSubscriptionCheckout(adminSession.userId, {
+        tier: selectedPlan.tier,
+      });
+
+      if (typeof window !== 'undefined') {
+        window.location.href = response.checkout_url;
+      }
+    } catch (checkoutError) {
+      if (checkoutError instanceof Error) {
+        setSubscriptionError(checkoutError.message);
+      } else {
+        setSubscriptionError('Could not start checkout');
+      }
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  function goBackToPlans() {
+    if (typeof window !== 'undefined') {
+      window.location.href = '/';
+    }
+  }
+
+  return (
+    <main>
+      <section className="px-8 py-16 bg-surface-container-low min-h-[70vh]">
+        <div className="max-w-5xl mx-auto grid lg:grid-cols-5 gap-6">
+          <div className="lg:col-span-2 rounded-3xl border border-outline-variant/40 bg-surface-container-lowest p-6 shadow-sm h-fit">
+            <p className="text-xs uppercase tracking-[0.18em] text-secondary font-bold">Selected plan</p>
+            <h2 className="text-3xl text-primary font-bold mt-2">{selectedPlan.name}</h2>
+            <p className="text-lg font-semibold text-on-surface mt-1">
+              {selectedPlan.priceLabel}
+              <span className="text-sm font-normal text-on-surface-variant">{selectedPlan.cadence}</span>
+            </p>
+            <p className="text-sm text-on-surface-variant mt-4">{selectedPlan.tagline}</p>
+
+            <div className="mt-5 space-y-2">
+              <p className="text-sm text-on-surface">{selectedPlan.userLimit}</p>
+              <p className="text-sm text-on-surface">{selectedPlan.messageLimit}</p>
+            </div>
+
+            <button
+              className="mt-6 px-4 py-2 rounded-xl text-sm font-bold bg-surface-container-low hover:bg-surface-container-high transition-colors"
+              type="button"
+              onClick={goBackToPlans}
+            >
+              Back to plans
+            </button>
+          </div>
+          <div className="lg:col-span-3 rounded-3xl border border-outline-variant/40 bg-surface-container-lowest p-8 shadow-sm">
+            <p className="text-xs uppercase tracking-[0.18em] text-secondary font-bold mb-2">Authenticated checkout</p>
+            <h3 className="text-3xl text-primary font-bold mb-6">Continue to payment</h3>
+            <p className="text-sm text-on-surface-variant mb-6">
+              Payment is available only for logged-in admin users. Your account identity will be used for this subscription checkout.
+            </p>
+            <form onSubmit={handleStartCheckout}>
+              {subscriptionError && <p className="mt-4 text-sm font-semibold text-error">{subscriptionError}</p>}
+
+              <button
+                className="mt-6 bg-primary-container text-white px-8 py-3 rounded-2xl font-bold text-base hover:opacity-90 transition-opacity shadow-lg shadow-primary-container/20 disabled:opacity-60"
+                type="submit"
+                disabled={isSubmitting}
+              >
+                {isSubmitting ? 'Preparing checkout...' : `Continue with ${selectedPlan.name} plan`}
+              </button>
+
+              <p className="mt-4 text-xs text-on-surface-variant">
+                Every user can buy a custom number of extra messages at any time, regardless of subscription plan.
+              </p>
+            </form>
+          </div>
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function SubscriptionSuccessPage({ adminSession }) {
+  return (
+    <main>
+      <section className="px-8 py-20 bg-surface-container-low min-h-[70vh]">
+        <div className="max-w-2xl mx-auto rounded-3xl border border-outline-variant/40 bg-surface-container-lowest p-10 shadow-sm text-center">
+          <p className="text-xs uppercase tracking-[0.18em] text-secondary font-bold mb-3">Payment complete</p>
+          <h2 className="text-4xl text-primary font-bold mb-4">Success! Your plan payment was completed.</h2>
+          <p className="text-sm text-on-surface-variant mb-8">
+            You can now continue to your admin account and manage users under your subscription.
+          </p>
+          <a
+            className="inline-flex items-center justify-center bg-primary-container text-white px-8 py-3 rounded-2xl font-bold text-sm hover:opacity-90 transition-opacity"
+            href={adminSession ? '/admin' : buildAdminLoginRedirectUrl('/admin')}
+          >
+            Go to Admin Account
+          </a>
         </div>
       </section>
     </main>
@@ -898,6 +1120,8 @@ export default function App() {
   const pathname = typeof window !== 'undefined' ? window.location.pathname : '/';
   const isAdminRoute = pathname.startsWith('/admin');
   const isPharmacistRoute = pathname.startsWith('/pharmacist');
+  const isSubscribeSuccessRoute = pathname === '/subscribe/success';
+  const isSubscribeRoute = pathname.startsWith('/subscribe');
   const isPharmacistAccountRoute = pathname.startsWith('/pharmacist/account');
   const isPharmacistAgentRoute = pathname.startsWith('/pharmacist/agent') || pathname === '/pharmacist';
   const currentRoute = isAdminRoute ? 'admin' : isPharmacistRoute ? 'pharmacist' : 'landing';
@@ -921,6 +1145,14 @@ export default function App() {
 
     persistAdminSession(session);
     setAdminSession(session);
+
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const redirectPath = params.get('redirect');
+      if (redirectPath) {
+        window.location.href = redirectPath;
+      }
+    }
   }
 
   function handleLogout() {
@@ -985,7 +1217,11 @@ export default function App() {
         isPharmacistAuthenticated={Boolean(pharmacistSession)}
         onAdminLogout={handleLogout}
       />
-      {isAdminRoute ? (
+      {isSubscribeSuccessRoute ? (
+        <SubscriptionSuccessPage adminSession={adminSession} />
+      ) : isSubscribeRoute ? (
+        <SubscriptionSignupPage adminSession={adminSession} />
+      ) : isAdminRoute ? (
         adminSession ? (
           <main>
             <AdminUsersPanel adminId={adminSession.userId} />
@@ -1010,7 +1246,7 @@ export default function App() {
           <PharmacistLoginPage onLogin={handlePharmacistLogin} />
         )
       ) : (
-        <LandingPageContent />
+        <LandingPageContent adminSession={adminSession} />
       )}
       <SiteFooter />
     </div>

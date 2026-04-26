@@ -144,3 +144,13 @@ export function sendUserMessage(userId, prompt) {
     body: JSON.stringify({ prompt }),
   });
 }
+
+export function createSubscriptionCheckout(userId, payload) {
+  return apiRequest('/subscriptions/checkout', {
+    method: 'POST',
+    headers: {
+      'X-User-Id': userId,
+    },
+    body: JSON.stringify(payload),
+  });
+}

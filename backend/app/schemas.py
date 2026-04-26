@@ -22,8 +22,11 @@ class UserBase(BaseModel):
     is_active: bool = True
 
 
-class UserCreate(UserBase):
+class UserCreate(BaseModel):
+    email: str = Field(min_length=5, max_length=254)
+    full_name: str = Field(min_length=2, max_length=120)
     password: str = Field(min_length=6, max_length=128)
+    is_active: bool = True
 
 
 class UserUpdate(BaseModel):
@@ -40,6 +43,7 @@ class UserUpdate(BaseModel):
 class UserRecord(UserBase):
     id: str
     password: str = ""
+    owner_admin_id: str | None = None
     monthly_messages_used: int = 0
     created_at: datetime
     updated_at: datetime
@@ -63,6 +67,9 @@ class TierInfo(BaseModel):
     tier: Tier
     monthly_message_limit: int
     allowed_agents: list[str]
+    admin_user_limit: int
+    supports_message_addons: bool
+    monthly_price_cents: int
 
 
 class MessageSimulationRequest(BaseModel):
@@ -108,6 +115,16 @@ class ChangePasswordRequest(BaseModel):
 
 class ChangePasswordResponse(BaseModel):
     detail: str
+
+
+class SubscriptionCheckoutRequest(BaseModel):
+    tier: Tier
+
+
+class SubscriptionCheckoutResponse(BaseModel):
+    subscription_id: str
+    checkout_session_id: str
+    checkout_url: str
 
 
 def to_user_response(user: UserRecord) -> UserResponse:

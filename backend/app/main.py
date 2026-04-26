@@ -4,7 +4,7 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .auth import get_current_user, require_admin
-from .deps import get_user_service
+from .deps import get_billing_service, get_user_service
 from .schemas import (
     AuthLoginRequest,
     AuthLoginResponse,
@@ -13,6 +13,8 @@ from .schemas import (
     HealthResponse,
     MessageSimulationRequest,
     MessageSimulationResponse,
+    SubscriptionCheckoutRequest,
+    SubscriptionCheckoutResponse,
     TierInfo,
     UserCreate,
     UserRecord,
@@ -21,6 +23,7 @@ from .schemas import (
     to_user_response,
     utcnow,
 )
+from .billing import BillingService
 from .service import UserService
 from .tiers import TIER_FEATURES, Tier
 
@@ -35,6 +38,8 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -67,14 +72,29 @@ def list_tiers() -> list[TierInfo]:
             tier=tier,
             monthly_message_limit=features["monthly_message_limit"],
             allowed_agents=features["allowed_agents"],
+            admin_user_limit=features["admin_user_limit"],
+            supports_message_addons=features["supports_message_addons"],
+            monthly_price_cents=features["monthly_price_cents"],
         )
         for tier, features in TIER_FEATURES.items()
     ]
 
 
-@app.get("/users", response_model=list[UserResponse], dependencies=[Depends(require_admin)])
-def list_users(service: UserService = Depends(get_user_service)) -> list[UserResponse]:
-    return [to_user_response(user) for user in service.list_users()]
+@app.post("/subscriptions/checkout", response_model=SubscriptionCheckoutResponse)
+def create_subscription_checkout(
+    payload: SubscriptionCheckoutRequest,
+    current_admin: UserRecord = Depends(require_admin),
+    billing_service: BillingService = Depends(get_billing_service),
+) -> SubscriptionCheckoutResponse:
+    return billing_service.create_checkout_session(payload, current_admin)
+
+
+@app.get("/users", response_model=list[UserResponse])
+def list_users(
+    current_admin: UserRecord = Depends(require_admin),
+    service: UserService = Depends(get_user_service),
+) -> list[UserResponse]:
+    return [to_user_response(user) for user in service.list_users_for_admin(current_admin.id)]
 
 
 @app.get("/users/me", response_model=UserResponse)
@@ -106,21 +126,34 @@ def get_user(
     return to_user_response(service.get_user(user_id))
 
 
-@app.post("/users", response_model=UserResponse, dependencies=[Depends(require_admin)])
-def create_user(payload: UserCreate, service: UserService = Depends(get_user_service)) -> UserResponse:
-    user = service.create_user(payload)
+@app.post("/users", response_model=UserResponse)
+def create_user(
+    payload: UserCreate,
+    current_admin: UserRecord = Depends(require_admin),
+    service: UserService = Depends(get_user_service),
+) -> UserResponse:
+    user = service.create_user_for_admin(current_admin, payload)
     return to_user_response(user)
 
 
-@app.put("/users/{user_id}", response_model=UserResponse, dependencies=[Depends(require_admin)])
-def update_user(user_id: str, payload: UserUpdate, service: UserService = Depends(get_user_service)) -> UserResponse:
-    user = service.update_user(user_id, payload)
+@app.put("/users/{user_id}", response_model=UserResponse)
+def update_user(
+    user_id: str,
+    payload: UserUpdate,
+    current_admin: UserRecord = Depends(require_admin),
+    service: UserService = Depends(get_user_service),
+) -> UserResponse:
+    user = service.update_user_for_admin(current_admin, user_id, payload)
     return to_user_response(user)
 
 
-@app.delete("/users/{user_id}", dependencies=[Depends(require_admin)])
-def delete_user(user_id: str, service: UserService = Depends(get_user_service)) -> dict[str, str]:
-    service.delete_user(user_id)
+@app.delete("/users/{user_id}")
+def delete_user(
+    user_id: str,
+    current_admin: UserRecord = Depends(require_admin),
+    service: UserService = Depends(get_user_service),
+) -> dict[str, str]:
+    service.delete_user_for_admin(current_admin, user_id)
     return {"detail": "User deleted"}
 
 

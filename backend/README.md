@@ -27,6 +27,13 @@ From repository root:
 .venv\Scripts\python.exe -m uvicorn backend.app.main:app --reload
 ```
 
+For Stripe checkout flows, set environment variables before starting the backend:
+
+```bash
+set STRIPE_SECRET_KEY=your_stripe_secret_key
+set FRONTEND_BASE_URL=http://localhost:5173
+```
+
 Swagger UI:
 
 - http://127.0.0.1:8000/docs
@@ -41,6 +48,7 @@ Default seeded admin user id: `admin-0001`
 
 - `GET /health`
 - `GET /tiers`
+- `POST /subscriptions/checkout` (create pharmacy admin account, then return Stripe checkout URL)
 - `GET /users` (admin)
 - `GET /users/me`
 - `GET /users/{user_id}` (admin or self)
