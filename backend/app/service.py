@@ -264,6 +264,24 @@ class UserService:
         users[idx] = user
         self.repository.save_users(users)
 
+    def ensure_org_admin(self, user_id: str, tier: Tier) -> UserRecord:
+        users = self.repository.list_users()
+        idx = next((i for i, user in enumerate(users) if user.id == user_id), None)
+        if idx is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+        current = users[idx]
+        updates = {
+            "role": "admin",
+            "tier": tier,
+            "owner_admin_id": None,
+            "updated_at": utcnow(),
+        }
+        merged = current.model_copy(update=updates)
+        users[idx] = merged
+        self.repository.save_users(users)
+        return merged
+
     def _find_by_id(self, user_id: str) -> UserRecord | None:
         users = self.repository.list_users()
         return next((user for user in users if user.id == user_id), None)

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from fastapi import Depends, FastAPI
+import json
+import os
+
+import stripe
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from .auth import get_current_user, require_admin
@@ -13,6 +17,8 @@ from .schemas import (
     HealthResponse,
     MessageSimulationRequest,
     MessageSimulationResponse,
+    SubscriptionConfirmRequest,
+    SubscriptionConfirmResponse,
     SubscriptionCheckoutRequest,
     SubscriptionCheckoutResponse,
     TierInfo,
@@ -83,10 +89,48 @@ def list_tiers() -> list[TierInfo]:
 @app.post("/subscriptions/checkout", response_model=SubscriptionCheckoutResponse)
 def create_subscription_checkout(
     payload: SubscriptionCheckoutRequest,
-    current_admin: UserRecord = Depends(require_admin),
+    current_user: UserRecord = Depends(get_current_user),
     billing_service: BillingService = Depends(get_billing_service),
 ) -> SubscriptionCheckoutResponse:
-    return billing_service.create_checkout_session(payload, current_admin)
+    return billing_service.create_checkout_session(payload, current_user)
+
+
+@app.post("/subscriptions/confirm", response_model=SubscriptionConfirmResponse)
+def confirm_subscription(
+    payload: SubscriptionConfirmRequest,
+    billing_service: BillingService = Depends(get_billing_service),
+) -> SubscriptionConfirmResponse:
+    billing_service.finalize_checkout_session(payload.session_id)
+    return SubscriptionConfirmResponse(detail="Subscription activated")
+
+
+@app.post("/subscriptions/webhook")
+async def stripe_webhook(
+    request: Request,
+    stripe_signature: str | None = Header(default=None, alias="Stripe-Signature"),
+    billing_service: BillingService = Depends(get_billing_service),
+) -> dict[str, str]:
+    payload = await request.body()
+    webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+
+    if webhook_secret:
+        try:
+            event = stripe.Webhook.construct_event(payload, stripe_signature, webhook_secret)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid webhook signature: {exc}")
+    else:
+        try:
+            event = json.loads(payload.decode("utf-8"))
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid webhook payload: {exc}")
+
+    if event.get("type") == "checkout.session.completed":
+        session = event.get("data", {}).get("object", {})
+        session_id = session.get("id")
+        if session_id:
+            billing_service.finalize_checkout_session(session_id)
+
+    return {"status": "ok"}
 
 
 @app.get("/users", response_model=list[UserResponse])
@@ -98,8 +142,24 @@ def list_users(
 
 
 @app.get("/users/me", response_model=UserResponse)
-def get_me(current_user: UserRecord = Depends(get_current_user)) -> UserResponse:
-    return to_user_response(current_user)
+def get_me(
+    current_user: UserRecord = Depends(get_current_user),
+    billing_service: BillingService = Depends(get_billing_service),
+) -> UserResponse:
+    user_response = to_user_response(current_user)
+    active_subscription = billing_service.get_active_subscription(current_user.id)
+    if active_subscription and active_subscription.get("tier"):
+        tier_value = active_subscription["tier"]
+        tier = Tier(tier_value)
+        tier_features = TIER_FEATURES[tier]
+        user_response = user_response.model_copy(
+            update={
+                "tier": tier,
+                "monthly_message_limit": tier_features["monthly_message_limit"],
+                "allowed_agents": tier_features["allowed_agents"],
+            }
+        )
+    return user_response
 
 
 @app.post("/users/me/password", response_model=ChangePasswordResponse)

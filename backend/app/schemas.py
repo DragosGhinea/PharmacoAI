@@ -127,6 +127,14 @@ class SubscriptionCheckoutResponse(BaseModel):
     checkout_url: str
 
 
+class SubscriptionConfirmRequest(BaseModel):
+    session_id: str = Field(min_length=1, max_length=256)
+
+
+class SubscriptionConfirmResponse(BaseModel):
+    detail: str
+
+
 def to_user_response(user: UserRecord) -> UserResponse:
     tier_features = TIER_FEATURES[user.tier]
     return UserResponse(

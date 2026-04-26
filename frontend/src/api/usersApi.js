@@ -154,3 +154,10 @@ export function createSubscriptionCheckout(userId, payload) {
     body: JSON.stringify(payload),
   });
 }
+
+export function confirmSubscription(sessionId) {
+  return apiRequest('/subscriptions/confirm', {
+    method: 'POST',
+    body: JSON.stringify({ session_id: sessionId }),
+  });
+}

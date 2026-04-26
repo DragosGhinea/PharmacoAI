@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 
-import { changeMyPassword, createSubscriptionCheckout, getMyUser, loginUser, sendUserMessage } from './api/usersApi';
+import { changeMyPassword, confirmSubscription, createSubscriptionCheckout, getMyUser, loginUser, sendUserMessage } from './api/usersApi';
 import AdminUsersPanel from './components/AdminUsersPanel';
 
 const ADMIN_SESSION_KEY = 'pharmacoai_admin_session';
 const PHARMACIST_SESSION_KEY = 'pharmacoai_pharmacist_session';
+const BILLING_SESSION_KEY = 'pharmacoai_billing_session';
 const ADMIN_LOGIN_EMAIL = 'admin@pharmacoai.local';
 
 function readAdminSession() {
@@ -75,6 +76,41 @@ function clearPharmacistSession() {
     return;
   }
   window.localStorage.removeItem(PHARMACIST_SESSION_KEY);
+}
+
+function readBillingSession() {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  const raw = window.localStorage.getItem(BILLING_SESSION_KEY);
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed?.userId && parsed?.email) {
+      return parsed;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function persistBillingSession(session) {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  window.localStorage.setItem(BILLING_SESSION_KEY, JSON.stringify(session));
+}
+
+function clearBillingSession() {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  window.localStorage.removeItem(BILLING_SESSION_KEY);
 }
 
 function navLinkClass(isActive) {
@@ -484,12 +520,38 @@ function PharmacistDashboard({ pharmacistSession }) {
 }
 
 function PharmacistAccountPage({ pharmacistSession, onLogout, onSessionRefresh }) {
+  const [accountProfile, setAccountProfile] = useState(null);
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+
+  useEffect(() => {
+    let mounted = true;
+    async function loadProfile() {
+      try {
+        const profile = await getMyUser(pharmacistSession.userId);
+        if (mounted) {
+          setAccountProfile(profile);
+        }
+      } catch {
+        if (mounted) {
+          setAccountProfile(null);
+        }
+      }
+    }
+
+    loadProfile();
+    return () => {
+      mounted = false;
+    };
+  }, [pharmacistSession.userId]);
+
+  const displayName = accountProfile?.full_name ?? pharmacistSession.fullName;
+  const displayEmail = accountProfile?.email ?? pharmacistSession.email;
+  const displayTier = accountProfile?.tier ?? pharmacistSession.tier;
 
   async function handlePasswordChange(event) {
     event.preventDefault();
@@ -532,15 +594,15 @@ function PharmacistAccountPage({ pharmacistSession, onLogout, onSessionRefresh }
             <div className="space-y-3 mb-6">
               <div className="rounded-xl border border-outline-variant/40 bg-surface-container-low p-4">
                 <p className="text-xs uppercase tracking-wider text-on-surface-variant mb-1">Name</p>
-                <p className="text-primary font-semibold">{pharmacistSession.fullName}</p>
+                <p className="text-primary font-semibold">{displayName}</p>
               </div>
               <div className="rounded-xl border border-outline-variant/40 bg-surface-container-low p-4">
                 <p className="text-xs uppercase tracking-wider text-on-surface-variant mb-1">Email</p>
-                <p className="text-primary font-semibold break-all">{pharmacistSession.email}</p>
+                <p className="text-primary font-semibold break-all">{displayEmail}</p>
               </div>
               <div className="rounded-xl border border-outline-variant/40 bg-surface-container-low p-4">
                 <p className="text-xs uppercase tracking-wider text-on-surface-variant mb-1">Tier</p>
-                <p className="text-primary font-semibold uppercase">{pharmacistSession.tier}</p>
+                <p className="text-primary font-semibold uppercase">{displayTier}</p>
               </div>
             </div>
 
@@ -665,26 +727,44 @@ function resolveSelectedPlan() {
   return SUBSCRIPTION_PLANS.find((plan) => plan.tier === requestedTier) ?? SUBSCRIPTION_PLANS[1];
 }
 
-function buildAdminLoginRedirectUrl(targetPath) {
-  const encodedTarget = encodeURIComponent(targetPath);
-  return `/admin?redirect=${encodedTarget}`;
-}
-
-function LandingPageContent({ adminSession }) {
+function LandingPageContent({ checkoutSession }) {
   const checkoutStatus =
     typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('checkout') : null;
+  const [accountProfile, setAccountProfile] = useState(null);
 
-  function goToSignup(tier) {
-    if (typeof window !== 'undefined') {
-      const checkoutPath = `/subscribe?plan=${tier}`;
-      if (!adminSession) {
-        window.location.href = buildAdminLoginRedirectUrl(checkoutPath);
+  useEffect(() => {
+    let mounted = true;
+    async function loadProfile() {
+      if (!checkoutSession?.userId) {
+        setAccountProfile(null);
         return;
       }
 
-      window.location.href = checkoutPath;
+      try {
+        const profile = await getMyUser(checkoutSession.userId);
+        if (mounted) {
+          setAccountProfile(profile);
+        }
+      } catch {
+        if (mounted) {
+          setAccountProfile(null);
+        }
+      }
+    }
+
+    loadProfile();
+    return () => {
+      mounted = false;
+    };
+  }, [checkoutSession?.userId]);
+
+  function goToSignup(tier) {
+    if (typeof window !== 'undefined') {
+      window.location.href = `/subscribe?plan=${tier}`;
     }
   }
+
+  const currentTier = accountProfile?.tier;
 
   return (
     <main>
@@ -903,8 +983,9 @@ function LandingPageContent({ adminSession }) {
                     className={`w-full rounded-xl py-2.5 text-sm font-bold transition-colors ${plan.buttonClass}`}
                     type="button"
                     onClick={() => goToSignup(plan.tier)}
+                    disabled={currentTier === plan.tier}
                   >
-                    Choose {plan.name}
+                    {currentTier === plan.tier ? 'Current plan' : `Choose ${plan.name}`}
                   </button>
                 </article>
               ))}
@@ -926,31 +1007,74 @@ function LandingPageContent({ adminSession }) {
   );
 }
 
-function SubscriptionSignupPage({ adminSession }) {
+function SubscriptionSignupPage({ checkoutSession, onBillingLogin, onBillingLogout, showSwitchAccount }) {
   const selectedPlan = resolveSelectedPlan();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [subscriptionError, setSubscriptionError] = useState('');
+  const [loginError, setLoginError] = useState('');
+  const [loginBusy, setLoginBusy] = useState(false);
+  const [loginEmail, setLoginEmail] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [accountProfile, setAccountProfile] = useState(null);
 
   useEffect(() => {
-    if (!adminSession && typeof window !== 'undefined') {
-      const currentPath = `${window.location.pathname}${window.location.search}`;
-      window.location.href = buildAdminLoginRedirectUrl(currentPath);
+    let mounted = true;
+    async function loadProfile() {
+      if (!checkoutSession?.userId) {
+        setAccountProfile(null);
+        return;
+      }
+
+      try {
+        const profile = await getMyUser(checkoutSession.userId);
+        if (mounted) {
+          setAccountProfile(profile);
+        }
+      } catch {
+        if (mounted) {
+          setAccountProfile(null);
+        }
+      }
     }
-  }, [adminSession]);
+
+    loadProfile();
+    return () => {
+      mounted = false;
+    };
+  }, [checkoutSession?.userId]);
+
+  async function handleBillingLogin(event) {
+    event.preventDefault();
+    setLoginError('');
+    setLoginBusy(true);
+
+    try {
+      await onBillingLogin({ email: loginEmail.trim(), password: loginPassword });
+      setLoginPassword('');
+    } catch (loginFailure) {
+      if (loginFailure instanceof Error) {
+        setLoginError(loginFailure.message);
+      } else {
+        setLoginError('Login failed');
+      }
+    } finally {
+      setLoginBusy(false);
+    }
+  }
 
   async function handleStartCheckout(event) {
     event.preventDefault();
     setSubscriptionError('');
 
-    if (!adminSession?.userId) {
-      setSubscriptionError('Please log in as an admin to continue with payment.');
+    if (!checkoutSession?.userId) {
+      setSubscriptionError('Please log in to continue with payment.');
       return;
     }
 
     setIsSubmitting(true);
 
     try {
-      const response = await createSubscriptionCheckout(adminSession.userId, {
+      const response = await createSubscriptionCheckout(checkoutSession.userId, {
         tier: selectedPlan.tier,
       });
 
@@ -1001,26 +1125,93 @@ function SubscriptionSignupPage({ adminSession }) {
             </button>
           </div>
           <div className="lg:col-span-3 rounded-3xl border border-outline-variant/40 bg-surface-container-lowest p-8 shadow-sm">
-            <p className="text-xs uppercase tracking-[0.18em] text-secondary font-bold mb-2">Authenticated checkout</p>
-            <h3 className="text-3xl text-primary font-bold mb-6">Continue to payment</h3>
-            <p className="text-sm text-on-surface-variant mb-6">
-              Payment is available only for logged-in admin users. Your account identity will be used for this subscription checkout.
-            </p>
-            <form onSubmit={handleStartCheckout}>
-              {subscriptionError && <p className="mt-4 text-sm font-semibold text-error">{subscriptionError}</p>}
+            {checkoutSession ? (
+              <>
+                <p className="text-xs uppercase tracking-[0.18em] text-secondary font-bold mb-2">Authenticated checkout</p>
+                <h3 className="text-3xl text-primary font-bold mb-4">Continue to payment</h3>
+                <p className="text-sm text-on-surface-variant mb-6">
+                  You are signed in as {checkoutSession.email}. Your account will be used for this subscription checkout.
+                </p>
 
-              <button
-                className="mt-6 bg-primary-container text-white px-8 py-3 rounded-2xl font-bold text-base hover:opacity-90 transition-opacity shadow-lg shadow-primary-container/20 disabled:opacity-60"
-                type="submit"
-                disabled={isSubmitting}
-              >
-                {isSubmitting ? 'Preparing checkout...' : `Continue with ${selectedPlan.name} plan`}
-              </button>
+                {accountProfile && (
+                  <div className="mb-6 rounded-2xl border border-outline-variant/40 bg-surface-container-low p-4 text-sm text-on-surface-variant">
+                    Current account: {accountProfile.full_name} · {accountProfile.role.toUpperCase()} · Tier {accountProfile.tier.toUpperCase()}
+                  </div>
+                )}
 
-              <p className="mt-4 text-xs text-on-surface-variant">
-                Every user can buy a custom number of extra messages at any time, regardless of subscription plan.
-              </p>
-            </form>
+                <form onSubmit={handleStartCheckout}>
+                  {subscriptionError && <p className="mt-4 text-sm font-semibold text-error">{subscriptionError}</p>}
+
+                  <button
+                    className="mt-2 bg-primary-container text-white px-8 py-3 rounded-2xl font-bold text-base hover:opacity-90 transition-opacity shadow-lg shadow-primary-container/20 disabled:opacity-60"
+                    type="submit"
+                    disabled={isSubmitting || accountProfile?.tier === selectedPlan.tier}
+                  >
+                    {accountProfile?.tier === selectedPlan.tier
+                      ? `${selectedPlan.name} is already active`
+                      : isSubmitting
+                        ? 'Preparing checkout...'
+                        : `Continue with ${selectedPlan.name} plan`}
+                  </button>
+
+                  <p className="mt-4 text-xs text-on-surface-variant">
+                    Every user can buy a custom number of extra messages at any time, regardless of subscription plan.
+                  </p>
+                </form>
+
+                {showSwitchAccount && (
+                  <button
+                    className="mt-4 text-xs font-semibold text-on-surface-variant hover:text-primary transition-colors"
+                    type="button"
+                    onClick={onBillingLogout}
+                  >
+                    Use a different account
+                  </button>
+                )}
+              </>
+            ) : (
+              <>
+                <p className="text-xs uppercase tracking-[0.18em] text-secondary font-bold mb-2">Sign in to continue</p>
+                <h3 className="text-3xl text-primary font-bold mb-4">Log in for billing</h3>
+                <p className="text-sm text-on-surface-variant mb-6">
+                  Log in with any existing account to start checkout. You can become the organization admin after payment completes.
+                </p>
+                <form className="space-y-4" onSubmit={handleBillingLogin}>
+                  <label className="block">
+                    <span className="text-xs font-bold text-on-surface-variant uppercase tracking-widest">Email</span>
+                    <input
+                      className="mt-2 block w-full rounded-xl border-outline-variant/60 bg-surface px-3 py-2 text-sm"
+                      value={loginEmail}
+                      onChange={(event) => setLoginEmail(event.target.value)}
+                      autoComplete="username"
+                      required
+                    />
+                  </label>
+
+                  <label className="block">
+                    <span className="text-xs font-bold text-on-surface-variant uppercase tracking-widest">Password</span>
+                    <input
+                      className="mt-2 block w-full rounded-xl border-outline-variant/60 bg-surface px-3 py-2 text-sm"
+                      type="password"
+                      value={loginPassword}
+                      onChange={(event) => setLoginPassword(event.target.value)}
+                      autoComplete="current-password"
+                      required
+                    />
+                  </label>
+
+                  {loginError && <p className="text-sm font-semibold text-error">{loginError}</p>}
+
+                  <button
+                    className="w-full bg-primary-container text-white rounded-2xl py-3 text-sm font-bold shadow-lg shadow-primary-container/20 hover:scale-[0.99] transition-transform disabled:opacity-70"
+                    type="submit"
+                    disabled={loginBusy}
+                  >
+                    {loginBusy ? 'Signing In...' : 'Log In'}
+                  </button>
+                </form>
+              </>
+            )}
           </div>
         </div>
       </section>
@@ -1028,7 +1219,51 @@ function SubscriptionSignupPage({ adminSession }) {
   );
 }
 
-function SubscriptionSuccessPage({ adminSession }) {
+function SubscriptionSuccessPage({ checkoutSession }) {
+  const isAdmin = checkoutSession?.role === 'admin';
+  const accountPath = isAdmin ? '/admin' : '/pharmacist/account';
+  const [status, setStatus] = useState('pending');
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let mounted = true;
+    async function finalize() {
+      if (typeof window === 'undefined') {
+        return;
+      }
+
+      const params = new URLSearchParams(window.location.search);
+      const sessionId = params.get('session_id');
+      if (!sessionId) {
+        if (mounted) {
+          setStatus('confirmed');
+        }
+        return;
+      }
+
+      try {
+        await confirmSubscription(sessionId);
+        if (mounted) {
+          setStatus('confirmed');
+        }
+      } catch (confirmError) {
+        if (mounted) {
+          setStatus('failed');
+          if (confirmError instanceof Error) {
+            setError(confirmError.message);
+          } else {
+            setError('Could not confirm subscription');
+          }
+        }
+      }
+    }
+
+    finalize();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
   return (
     <main>
       <section className="px-8 py-20 bg-surface-container-low min-h-[70vh]">
@@ -1036,13 +1271,23 @@ function SubscriptionSuccessPage({ adminSession }) {
           <p className="text-xs uppercase tracking-[0.18em] text-secondary font-bold mb-3">Payment complete</p>
           <h2 className="text-4xl text-primary font-bold mb-4">Success! Your plan payment was completed.</h2>
           <p className="text-sm text-on-surface-variant mb-8">
-            You can now continue to your admin account and manage users under your subscription.
+            You can now continue to your account and manage your subscription.
           </p>
+          {status === 'pending' && (
+            <p className="mb-6 rounded-xl bg-surface-container-low border border-outline-variant/40 text-on-surface-variant px-4 py-3 text-sm font-semibold">
+              Confirming your subscription...
+            </p>
+          )}
+          {status === 'failed' && (
+            <p className="mb-6 rounded-xl bg-error/10 border border-error/30 text-error px-4 py-3 text-sm font-semibold">
+              {error || 'Could not confirm subscription.'}
+            </p>
+          )}
           <a
             className="inline-flex items-center justify-center bg-primary-container text-white px-8 py-3 rounded-2xl font-bold text-sm hover:opacity-90 transition-opacity"
-            href={adminSession ? '/admin' : buildAdminLoginRedirectUrl('/admin')}
+            href={accountPath}
           >
-            Go to Admin Account
+            Go to Account
           </a>
         </div>
       </section>
@@ -1128,6 +1373,7 @@ export default function App() {
 
   const [adminSession, setAdminSession] = useState(() => readAdminSession());
   const [pharmacistSession, setPharmacistSession] = useState(() => readPharmacistSession());
+  const [billingSession, setBillingSession] = useState(() => readBillingSession());
 
   async function handleAdminLogin({ username, password }) {
     const email = username.includes('@') ? username : ADMIN_LOGIN_EMAIL;
@@ -1161,6 +1407,26 @@ export default function App() {
     if (typeof window !== 'undefined') {
       window.location.href = '/';
     }
+  }
+
+  async function handleBillingLogin({ email, password }) {
+    const user = await loginUser(email, password);
+
+    const session = {
+      userId: user.user_id,
+      email: user.email,
+      fullName: user.full_name,
+      role: user.role,
+      tier: user.tier,
+    };
+
+    persistBillingSession(session);
+    setBillingSession(session);
+  }
+
+  function handleBillingLogout() {
+    clearBillingSession();
+    setBillingSession(null);
   }
 
   async function handlePharmacistLogin({ email, password }) {
@@ -1217,37 +1483,45 @@ export default function App() {
         isPharmacistAuthenticated={Boolean(pharmacistSession)}
         onAdminLogout={handleLogout}
       />
-      {isSubscribeSuccessRoute ? (
-        <SubscriptionSuccessPage adminSession={adminSession} />
-      ) : isSubscribeRoute ? (
-        <SubscriptionSignupPage adminSession={adminSession} />
-      ) : isAdminRoute ? (
-        adminSession ? (
-          <main>
-            <AdminUsersPanel adminId={adminSession.userId} />
-          </main>
-        ) : (
-          <AdminLoginPage onLogin={handleAdminLogin} />
-        )
-      ) : isPharmacistRoute ? (
-        pharmacistSession ? (
-          isPharmacistAccountRoute ? (
-            <PharmacistAccountPage
-              pharmacistSession={pharmacistSession}
-              onLogout={handlePharmacistLogout}
-              onSessionRefresh={refreshPharmacistSession}
-            />
-          ) : isPharmacistAgentRoute ? (
-            <PharmacistDashboard pharmacistSession={pharmacistSession} />
+      {(() => {
+        const checkoutSession = adminSession ?? pharmacistSession ?? billingSession;
+        return isSubscribeSuccessRoute ? (
+          <SubscriptionSuccessPage checkoutSession={checkoutSession} />
+        ) : isSubscribeRoute ? (
+          <SubscriptionSignupPage
+            checkoutSession={checkoutSession}
+            onBillingLogin={handleBillingLogin}
+            onBillingLogout={handleBillingLogout}
+            showSwitchAccount={Boolean(billingSession) && !adminSession && !pharmacistSession}
+          />
+        ) : isAdminRoute ? (
+          adminSession ? (
+            <main>
+              <AdminUsersPanel adminId={adminSession.userId} />
+            </main>
           ) : (
-            <PharmacistDashboard pharmacistSession={pharmacistSession} />
+            <AdminLoginPage onLogin={handleAdminLogin} />
+          )
+        ) : isPharmacistRoute ? (
+          pharmacistSession ? (
+            isPharmacistAccountRoute ? (
+              <PharmacistAccountPage
+                pharmacistSession={pharmacistSession}
+                onLogout={handlePharmacistLogout}
+                onSessionRefresh={refreshPharmacistSession}
+              />
+            ) : isPharmacistAgentRoute ? (
+              <PharmacistDashboard pharmacistSession={pharmacistSession} />
+            ) : (
+              <PharmacistDashboard pharmacistSession={pharmacistSession} />
+            )
+          ) : (
+            <PharmacistLoginPage onLogin={handlePharmacistLogin} />
           )
         ) : (
-          <PharmacistLoginPage onLogin={handlePharmacistLogin} />
-        )
-      ) : (
-        <LandingPageContent adminSession={adminSession} />
-      )}
+          <LandingPageContent checkoutSession={checkoutSession} />
+        );
+      })()}
       <SiteFooter />
     </div>
   );
