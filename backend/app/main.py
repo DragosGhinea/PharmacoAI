@@ -1,14 +1,39 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import os
+from pathlib import Path
+from time import perf_counter
+from datetime import datetime, timezone
+from uuid import uuid4
 
 import stripe
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
+from fastapi import HTTPException, status
+from fastapi import Depends, FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+
+from ..env_loader import load_root_env
+
+load_root_env()
+
+from .agents_schemas import (
+    AgentChatRequest,
+    AgentChatResponse,
+    AgentConversation,
+    AgentDefinition,
+    AgentHandoffRequest,
+    AgentListResponse,
+    StreamCancelRequest,
+)
+from .agents_service import AgentsService
 from .auth import get_current_user, require_admin
-from .deps import get_billing_service, get_user_service
+from .deps import get_agents_service, get_billing_service, get_user_service
 from .schemas import (
     AuthLoginRequest,
     AuthLoginResponse,
@@ -33,6 +58,33 @@ from .billing import BillingService
 from .service import UserService
 from .tiers import TIER_FEATURES, Tier
 
+REQUEST_LOGGER = logging.getLogger("pharmacoai.backend.requests")
+REQUEST_LOG_PATH = Path(
+    os.getenv(
+        "BACKEND_REQUEST_LOG_FILE",
+        str(Path(__file__).resolve().parents[1] / "logs" / "requests.log"),
+    )
+)
+REQUEST_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _append_request_log_line(message: str) -> None:
+    timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    with REQUEST_LOG_PATH.open("a", encoding="utf-8") as fh:
+        fh.write(f"{timestamp} {message}\n")
+
+
+if not REQUEST_LOGGER.handlers:
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter(
+        "%(asctime)s %(levelname)s [%(name)s] %(message)s",
+        "%Y-%m-%dT%H:%M:%S",
+    )
+    handler.setFormatter(formatter)
+    REQUEST_LOGGER.addHandler(handler)
+REQUEST_LOGGER.setLevel(logging.INFO)
+REQUEST_LOGGER.propagate = False
+
 app = FastAPI(
     title="PharmacoAI Backend",
     version="0.1.0",
@@ -41,16 +93,55 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:5174",
-        "http://127.0.0.1:5174",
-    ],
+    allow_origins=[],
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def log_http_requests(request: Request, call_next):
+    started_at = perf_counter()
+    method = request.method
+    path = request.url.path
+    if request.url.query:
+        path = f"{path}?{request.url.query}"
+    client = request.client.host if request.client else "-"
+
+    try:
+        response = await call_next(request)
+    except Exception:
+        duration_ms = (perf_counter() - started_at) * 1000
+        failure_line = (
+            f"request_failed method={method} path={path} client={client} duration_ms={duration_ms:.2f}"
+        )
+        REQUEST_LOGGER.exception(
+            "request_failed method=%s path=%s client=%s duration_ms=%.2f",
+            method,
+            path,
+            client,
+            duration_ms,
+        )
+        _append_request_log_line(failure_line)
+        raise
+
+    duration_ms = (perf_counter() - started_at) * 1000
+    request_line = (
+        f"request method={method} path={path} status={response.status_code} "
+        f"client={client} duration_ms={duration_ms:.2f}"
+    )
+    REQUEST_LOGGER.info(
+        "request method=%s path=%s status=%s client=%s duration_ms=%.2f",
+        method,
+        path,
+        response.status_code,
+        client,
+        duration_ms,
+    )
+    _append_request_log_line(request_line)
+    return response
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -225,8 +316,156 @@ def simulate_message(
     service: UserService = Depends(get_user_service),
 ) -> MessageSimulationResponse:
     if current_user.role != "admin" and current_user.id != user_id:
-        from fastapi import HTTPException, status
-
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
 
     return service.simulate_message(user_id, payload.prompt)
+
+
+@app.get("/agents", response_model=AgentListResponse)
+def list_agents(
+    current_user: UserRecord = Depends(get_current_user),
+    service: AgentsService = Depends(get_agents_service),
+) -> AgentListResponse:
+    return AgentListResponse(agents=service.list_agents_for_user(user=current_user))
+
+
+@app.get("/agents/{agent_id}", response_model=AgentDefinition)
+def get_agent(
+    agent_id: str,
+    current_user: UserRecord = Depends(get_current_user),
+    service: AgentsService = Depends(get_agents_service),
+) -> AgentDefinition:
+    return service.get_agent_for_user(user=current_user, agent_id=agent_id)
+
+
+@app.post("/agents/{agent_id}/chat", response_model=AgentChatResponse)
+async def chat_with_agent(
+    agent_id: str,
+    payload: AgentChatRequest,
+    current_user: UserRecord = Depends(get_current_user),
+    service: AgentsService = Depends(get_agents_service),
+) -> AgentChatResponse:
+    return await service.chat_with_agent(user=current_user, agent_id=agent_id, payload=payload)
+
+
+@app.post("/agents/chat", response_model=AgentChatResponse)
+async def chat_with_orchestrator(
+    payload: AgentChatRequest,
+    current_user: UserRecord = Depends(get_current_user),
+    service: AgentsService = Depends(get_agents_service),
+) -> AgentChatResponse:
+    return await service.chat_with_orchestrator(user=current_user, payload=payload)
+
+
+@app.post("/agents/chat/stream")
+async def chat_with_orchestrator_stream(
+    payload: AgentChatRequest,
+    current_user: UserRecord = Depends(get_current_user),
+    service: AgentsService = Depends(get_agents_service),
+) -> StreamingResponse:
+    queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+    request_id = str(uuid4())
+
+    def on_tool_event(event: dict[str, object]) -> None:
+        event_type = str(event.get("event_type") or "tool_call")
+        queue.put_nowait({"type": event_type, **event})
+
+    async def run_chat() -> None:
+        try:
+            result = await service.chat_with_orchestrator(
+                user=current_user,
+                payload=payload,
+                on_tool_event=on_tool_event,
+            )
+            await queue.put({"type": "final", "data": result.model_dump(mode="json")})
+        except asyncio.CancelledError:
+            return
+        except HTTPException as exc:
+            detail = exc.detail
+            if isinstance(detail, str) and detail.strip():
+                message = detail.strip()
+            else:
+                message = f"HTTP {exc.status_code}"
+            await queue.put({"type": "error", "message": message, "status_code": exc.status_code})
+        except Exception as exc:  # pragma: no cover - runtime fallback
+            message = str(exc).strip() or f"{exc.__class__.__name__} during orchestrator stream"
+            await queue.put({"type": "error", "message": message})
+        finally:
+            service.clear_stream_task(request_id=request_id)
+            await queue.put({"type": "done"})
+
+    task = asyncio.create_task(run_chat())
+    service.register_stream_task(request_id=request_id, user_id=current_user.id, task=task)
+    queue.put_nowait({"type": "started", "request_id": request_id})
+
+    async def event_stream() -> object:
+        try:
+            while True:
+                item = await queue.get()
+                yield "data: " + json.dumps(item, ensure_ascii=True) + "\n\n"
+                # Hand control back to the loop so chunks are flushed progressively.
+                await asyncio.sleep(0)
+                if item.get("type") == "done":
+                    break
+        finally:
+            if not task.done():
+                task.cancel()
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.post("/agents/chat/stream/cancel")
+def cancel_chat_stream(
+    payload: StreamCancelRequest,
+    current_user: UserRecord = Depends(get_current_user),
+    service: AgentsService = Depends(get_agents_service),
+) -> dict[str, str]:
+    cancelled = service.cancel_stream_task(request_id=payload.request_id, user_id=current_user.id)
+    if not cancelled:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Stream not found")
+    return {"status": "cancelled"}
+
+
+@app.post("/agents/handoff", response_model=AgentChatResponse)
+async def handoff_between_agents(
+    payload: AgentHandoffRequest,
+    current_user: UserRecord = Depends(get_current_user),
+    service: AgentsService = Depends(get_agents_service),
+) -> AgentChatResponse:
+    return await service.handoff(user=current_user, payload=payload)
+
+
+@app.get("/agents/conversations/{conversation_id}", response_model=AgentConversation)
+def get_conversation(
+    conversation_id: str,
+    _current_user: UserRecord = Depends(get_current_user),
+    service: AgentsService = Depends(get_agents_service),
+) -> AgentConversation:
+    return service.get_conversation(conversation_id)
+
+
+@app.delete("/agents/conversations/{conversation_id}")
+def delete_conversation(
+    conversation_id: str,
+    current_user: UserRecord = Depends(get_current_user),
+    service: AgentsService = Depends(get_agents_service),
+) -> dict[str, str]:
+    service.delete_conversation(conversation_id=conversation_id, user_id=current_user.id)
+    return {"detail": "Conversation deleted"}
+
+
+@app.delete("/agents/conversations")
+def delete_all_conversations(
+    current_user: UserRecord = Depends(get_current_user),
+    service: AgentsService = Depends(get_agents_service),
+) -> dict[str, int]:
+    removed = service.delete_all_conversations_for_user(user_id=current_user.id)
+    return {"removed": removed}
