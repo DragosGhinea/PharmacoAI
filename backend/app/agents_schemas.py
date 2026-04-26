@@ -57,6 +57,12 @@ class AgentChatTurn(BaseModel):
     source_links: list[str] = Field(default_factory=list)
 
 
+class AgentWorkEntry(BaseModel):
+    assistant_base_index: int = 0
+    turns: list[AgentChatTurn] = Field(default_factory=list)
+    assistant_messages: list[AgentMessage] = Field(default_factory=list)
+
+
 class AgentChatResponse(BaseModel):
     conversation_id: str
     final_agent_id: str
@@ -66,6 +72,7 @@ class AgentChatResponse(BaseModel):
     evidence_snippets: list[str] = Field(default_factory=list)
     source_links: list[str] = Field(default_factory=list)
     turns: list[AgentChatTurn] = Field(default_factory=list)
+    agent_work_history: list[AgentWorkEntry] = Field(default_factory=list)
 
 
 class AgentHandoffRequest(BaseModel):
@@ -80,6 +87,7 @@ class AgentConversation(BaseModel):
     conversation_id: str
     participants: list[str]
     messages: list[AgentMessage]
+    agent_work_history: list[AgentWorkEntry] = Field(default_factory=list)
 
 
 class AgentListResponse(BaseModel):

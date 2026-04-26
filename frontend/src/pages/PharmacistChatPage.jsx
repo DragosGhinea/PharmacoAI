@@ -1,6 +1,13 @@
 import { useEffect, useState } from 'react';
 
-import { cancelOrchestratorStream, chatWithOrchestratorStream, getAgentConversation, getMyUser } from '../api/usersApi';
+import {
+  cancelOrchestratorStream,
+  chatWithOrchestratorStream,
+  deleteAllConversations,
+  deleteConversation,
+  getAgentConversation,
+  getMyUser,
+} from '../api/usersApi';
 import ChatComposer from '../components/pharmacist-chat/ChatComposer';
 import ChatSidebar from '../components/pharmacist-chat/ChatSidebar';
 import ChatTimeline from '../components/pharmacist-chat/ChatTimeline';
@@ -258,16 +265,7 @@ export default function PharmacistChatPage({ pharmacistSession }) {
       const resolvedConversationId = response.conversation_id || targetConversationId || '';
       setConversationId(resolvedConversationId);
       setChatTurns(response.turns || []);
-      const assistantMessages = (conversationMessages || []).filter((item) => item?.role === 'assistant');
-      const assistantSlice = assistantMessages.slice(assistantBaseIndexSnapshot);
-      setAgentWorkHistory((current) => [
-        ...current,
-        {
-          assistantBaseIndex: assistantBaseIndexSnapshot,
-          turns: response.turns || [],
-          assistantMessages: assistantSlice,
-        },
-      ]);
+      setAgentWorkHistory(response.agent_work_history || []);
       setMessageInfo(`Conversation ID: ${response.conversation_id}`);
       const turnList = response.turns || [];
       const lastTurn = turnList[turnList.length - 1];
@@ -285,6 +283,7 @@ export default function PharmacistChatPage({ pharmacistSession }) {
       if (resolvedConversationId) {
         const conversationResponse = await getAgentConversation(pharmacistSession.userId, resolvedConversationId);
         setConversationMessages(conversationResponse.messages || []);
+        setAgentWorkHistory(conversationResponse.agent_work_history || []);
       }
 
       const refreshedProfile = await getMyUser(pharmacistSession.userId);
@@ -357,6 +356,7 @@ export default function PharmacistChatPage({ pharmacistSession }) {
     try {
       const response = await getAgentConversation(pharmacistSession.userId, conversationId);
       setConversationMessages(response.messages || []);
+      setAgentWorkHistory(response.agent_work_history || []);
       const assistantMessages = (response.messages || []).filter((item) => item.role === 'assistant');
       const lastTurnSender = assistantMessages.length > 0 ? assistantMessages[assistantMessages.length - 1].sender : 'orchestrator-agent';
       setConversationHistory((current) =>
@@ -382,6 +382,7 @@ export default function PharmacistChatPage({ pharmacistSession }) {
       const response = await getAgentConversation(pharmacistSession.userId, targetConversationId);
       setConversationId(targetConversationId);
       setConversationMessages(response.messages || []);
+      setAgentWorkHistory(response.agent_work_history || []);
       setActiveAssistantBaseIndex(0);
       setChatTurns([]);
       setAgentWorkHistory([]);
@@ -391,6 +392,43 @@ export default function PharmacistChatPage({ pharmacistSession }) {
         setError(openError.message);
       } else {
         setError('Could not open conversation history');
+      }
+    }
+  }
+
+  async function removeConversation(targetConversationId) {
+    if (!targetConversationId) {
+      return;
+    }
+    setError('');
+    try {
+      await deleteConversation(pharmacistSession.userId, targetConversationId);
+      setConversationHistory((current) =>
+        current.filter((entry) => entry.conversationId !== targetConversationId)
+      );
+      if (conversationId === targetConversationId) {
+        startNewConversation();
+      }
+    } catch (deleteError) {
+      if (deleteError instanceof Error) {
+        setError(deleteError.message);
+      } else {
+        setError('Could not delete conversation');
+      }
+    }
+  }
+
+  async function removeAllConversations() {
+    setError('');
+    try {
+      await deleteAllConversations(pharmacistSession.userId);
+      setConversationHistory([]);
+      startNewConversation();
+    } catch (deleteError) {
+      if (deleteError instanceof Error) {
+        setError(deleteError.message);
+      } else {
+        setError('Could not delete conversations');
       }
     }
   }
@@ -423,6 +461,8 @@ export default function PharmacistChatPage({ pharmacistSession }) {
             conversationId={conversationId}
             onOpenConversation={openConversation}
             onNewConversation={startNewConversation}
+            onDeleteConversation={removeConversation}
+            onDeleteAllConversations={removeAllConversations}
           />
 
           <div className="flex-1 min-w-0 bg-surface-container-lowest p-3 lg:p-4 border-l-0 border-outline-variant/40 flex flex-col">

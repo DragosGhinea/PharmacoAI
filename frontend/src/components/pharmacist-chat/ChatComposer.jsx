@@ -22,10 +22,12 @@ export default function ChatComposer({
       )}
 
       <textarea
-        className="w-full min-h-16 rounded-lg border-outline-variant/60 bg-surface px-2.5 py-1.5 text-xs"
+        className="w-full min-h-16 rounded-lg border-outline-variant/60 bg-surface px-2.5 py-1.5 text-xs disabled:opacity-70"
         placeholder="Example: Ce stii despre metamizol? verifica interactiunile si explica pe intelesul pacientului."
         value={question}
         onChange={(event) => onQuestionChange(event.target.value)}
+        disabled={isSending}
+        aria-disabled={isSending}
         onKeyDown={(event) => {
           if (event.key === 'Enter' && !event.shiftKey) {
             event.preventDefault();

@@ -22,20 +22,41 @@ from .agents_schemas import (
     AgentDefinition,
     AgentHandoffRequest,
     AgentMessage,
+    AgentWorkEntry,
 )
+from .conversation_repository import ConversationRepository
 from .drug_sources import get_grounded_medication_context
 from .schemas import UserRecord
 from .tiers import TIER_FEATURES
 
 
 class AgentsService:
-    def __init__(self) -> None:
+    def __init__(self, conversation_repository: ConversationRepository | None = None) -> None:
         self._definitions = {item.id: item for item in load_agent_definitions() if item.enabled}
         self._conversations: dict[str, AgentConversation] = {}
         self._tool_history: dict[str, list[str]] = {}
         self._tool_calls_by_message: dict[str, dict[str, list[dict[str, Any]]]] = {}
         self._stream_tasks: dict[str, tuple[str, asyncio.Task[None]]] = {}
+        self._conversation_repository = conversation_repository
         self._lock = Lock()
+
+        if self._conversation_repository is not None:
+            for conversation in self._conversation_repository.list_conversations():
+                self._conversations[conversation.conversation_id] = conversation
+
+    def _has_recent_medication_flow(self, conversation: AgentConversation) -> bool:
+        if not conversation.agent_work_history:
+            return False
+        last_entry = conversation.agent_work_history[-1]
+        for turn in reversed(last_entry.turns or []):
+            if turn.agent_id in {
+                "medication-normalization-agent",
+                "medication-evidence-gathering-agent",
+                "medication-answer-synthesis-agent",
+                "layman-translator-agent",
+            }:
+                return True
+        return False
 
     def list_agents(self) -> list[AgentDefinition]:
         return list(self._definitions.values())
@@ -80,6 +101,11 @@ class AgentsService:
         payload: AgentChatRequest,
         on_tool_event: Callable[[dict[str, Any]], None] | None = None,
     ) -> AgentChatResponse:
+        conversation = self._get_or_create_conversation(
+            payload.conversation_id,
+            participants=["pharmacist-general-agent", user.id],
+        )
+        assistant_start_index = len([msg for msg in conversation.messages if msg.role == "assistant"])
         general_agent = self.get_agent_for_user(user=user, agent_id="pharmacist-general-agent")
         triage_prompt = (
             "Return INTENT_JSON on the first line with keys: intent (medication|general|unclear), "
@@ -97,18 +123,42 @@ class AgentsService:
             prompt=triage_prompt,
         )
         triage_payload, general_response = self._extract_intent_payload(triage_response)
-        triage_call = call_mcp_tool(
-            "medication_analysis",
-            args={
-                "message": payload.message,
-                "triage_output": json.dumps(triage_payload, ensure_ascii=True),
-            },
-            caller_id=user.id,
+        intent = str(triage_payload.get("intent") or "").strip().lower()
+        try:
+            confidence = float(triage_payload.get("confidence", 0))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        medication_guess = self._extract_medication_guess(payload.message)
+        follow_up_without_medication = (
+            not medication_guess and self._has_recent_medication_flow(conversation)
         )
-        triage_data = triage_call.get("output") if isinstance(triage_call, dict) else None
-        triage_payload = triage_data.get("data", {}) if isinstance(triage_data, dict) else {}
+        should_call_med_analysis = not (intent == "general" and confidence >= 0.6)
+        if follow_up_without_medication and intent == "medication":
+            should_call_med_analysis = False
+
+        triage_call = None
+        if should_call_med_analysis:
+            triage_call = call_mcp_tool(
+                "medication_analysis",
+                args={
+                    "message": payload.message,
+                    "triage_output": json.dumps(triage_payload, ensure_ascii=True),
+                },
+                caller_id=user.id,
+            )
+            triage_data = triage_call.get("output") if isinstance(triage_call, dict) else None
+            tool_payload = triage_data.get("data", {}) if isinstance(triage_data, dict) else {}
+            if isinstance(tool_payload, dict) and tool_payload:
+                triage_payload = {**triage_payload, **tool_payload}
+
         trigger_medication_flow = bool(triage_payload.get("trigger_medication_flow"))
+        if not should_call_med_analysis and intent == "general":
+            trigger_medication_flow = False
+        if follow_up_without_medication:
+            trigger_medication_flow = False
         medication_name = str(triage_payload.get("medication_name") or "").strip()
+        if trigger_medication_flow:
+            general_response = "Starting medication analysis. I'll share results shortly."
 
         if on_tool_event:
             on_tool_event(
@@ -120,14 +170,15 @@ class AgentsService:
                     "message": f"Starting {general_agent.name}",
                 }
             )
-            on_tool_event(
-                {
-                    "event_type": "tool_call",
-                    "turn_index": 0,
-                    "agent_id": general_agent.id,
-                    "call": triage_call,
-                }
-            )
+            if triage_call is not None:
+                on_tool_event(
+                    {
+                        "event_type": "tool_call",
+                        "turn_index": 0,
+                        "agent_id": general_agent.id,
+                        "call": triage_call,
+                    }
+                )
             on_tool_event(
                 {
                     "event_type": "step_completed",
@@ -145,8 +196,12 @@ class AgentsService:
             response=general_response or triage_response,
             provider=general_agent.provider,
             model=general_agent.model,
-            thought_summary="Intent triage via medication_analysis",
-            mcp_tool_calls=[triage_call],
+            thought_summary=(
+                "Intent triage via medication_analysis"
+                if triage_call is not None
+                else "Intent triage via general agent"
+            ),
+            mcp_tool_calls=[triage_call] if triage_call is not None else [],
             clinician_summary=general_response or triage_response,
             patient_summary=general_response or triage_response,
             evidence_snippets=[],
@@ -169,10 +224,6 @@ class AgentsService:
             ]
         else:
             grounded_context = {"evidence_snippets": [], "source_links": [], "metadata": payload.metadata}
-            conversation = self._get_or_create_conversation(
-                payload.conversation_id,
-                participants=[general_agent.id, user.id],
-            )
             if not self._resolve_resume_anchor(conversation=conversation, user_id=user.id, payload=payload):
                 self._append_message(
                     conversation.conversation_id,
@@ -192,6 +243,11 @@ class AgentsService:
                     timestamp=_utcnow(),
                 ),
             )
+            self._record_agent_work(
+                conversation_id=conversation.conversation_id,
+                assistant_start_index=assistant_start_index,
+                turns=[triage_turn],
+            )
             return AgentChatResponse(
                 conversation_id=conversation.conversation_id,
                 final_agent_id=general_agent.id,
@@ -201,6 +257,7 @@ class AgentsService:
                 evidence_snippets=[],
                 source_links=[],
                 turns=[triage_turn],
+                agent_work_history=list(conversation.agent_work_history),
             )
 
         response = await self._chat_with_chain(
@@ -210,8 +267,15 @@ class AgentsService:
             on_tool_event=on_tool_event,
             grounded_context=grounded_context,
             turn_index_offset=1,
+            record_agent_work=False,
         )
         response.turns.insert(0, triage_turn)
+        self._record_agent_work(
+            conversation_id=response.conversation_id,
+            assistant_start_index=assistant_start_index,
+            turns=response.turns,
+        )
+        response.agent_work_history = list(self.get_conversation(response.conversation_id).agent_work_history)
         return response
 
     def register_stream_task(self, *, request_id: str, user_id: str, task: asyncio.Task[None]) -> None:
@@ -291,12 +355,14 @@ class AgentsService:
         on_tool_event: Callable[[dict[str, Any]], None] | None = None,
         grounded_context: dict[str, Any] | None = None,
         turn_index_offset: int = 0,
+        record_agent_work: bool = True,
     ) -> AgentChatResponse:
         if not chain:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Agent chain cannot be empty")
 
         first_agent = self.get_agent_for_user(user=user, agent_id=chain[0])
         conversation = self._get_or_create_conversation(payload.conversation_id, participants=[first_agent.id, user.id, *chain])
+        assistant_start_index = len([msg for msg in conversation.messages if msg.role == "assistant"])
 
         if grounded_context is None:
             grounded_context = await self._build_grounding_context(payload)
@@ -453,7 +519,7 @@ class AgentsService:
             current_input = response
 
         final_turn = turns[-1]
-        return AgentChatResponse(
+        response = AgentChatResponse(
             conversation_id=conversation.conversation_id,
             final_agent_id=final_turn.agent_id,
             final_response=final_turn.response,
@@ -463,6 +529,14 @@ class AgentsService:
             source_links=final_turn.source_links,
             turns=turns,
         )
+        if record_agent_work:
+            self._record_agent_work(
+                conversation_id=conversation.conversation_id,
+                assistant_start_index=assistant_start_index,
+                turns=turns,
+            )
+            response.agent_work_history = list(conversation.agent_work_history)
+        return response
 
     def _resolve_resume_anchor(self, *, conversation: AgentConversation, user_id: str, payload: AgentChatRequest) -> int | None:
         metadata = payload.metadata if isinstance(payload.metadata, dict) else {}
@@ -691,6 +765,34 @@ class AgentsService:
         if conversation is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
         return conversation
+
+    def delete_conversation(self, *, conversation_id: str, user_id: str) -> None:
+        with self._lock:
+            conversation = self._conversations.get(conversation_id)
+            if conversation is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+            if user_id not in conversation.participants:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+            self._conversations.pop(conversation_id, None)
+            self._tool_history.pop(conversation_id, None)
+            self._tool_calls_by_message.pop(conversation_id, None)
+            self._persist_conversations_locked()
+
+    def delete_all_conversations_for_user(self, *, user_id: str) -> int:
+        removed = 0
+        with self._lock:
+            conversation_ids = [
+                cid
+                for cid, conversation in self._conversations.items()
+                if user_id in conversation.participants
+            ]
+            for cid in conversation_ids:
+                self._conversations.pop(cid, None)
+                self._tool_history.pop(cid, None)
+                self._tool_calls_by_message.pop(cid, None)
+                removed += 1
+            self._persist_conversations_locked()
+        return removed
 
     async def _invoke_agent(self, *, agent: AgentDefinition, conversation_id: str, grounded_context: dict[str, Any]) -> str:
         provider_client = get_provider_client(agent.provider)
@@ -987,6 +1089,9 @@ class AgentsService:
                 "source_links": [],
                 "metadata": payload.metadata,
                 "medication_guess": raw_name,
+                "original_query": raw_name,
+                "selected_query": raw_name,
+                "query_candidates": candidates,
             }
 
         grounded["original_query"] = raw_name
@@ -1292,11 +1397,16 @@ class AgentsService:
         previous_turns: list[AgentChatTurn],
         on_tool_call: Callable[[dict[str, Any]], None] | None = None,
     ) -> list[dict[str, Any]]:
-        medication_name = str(grounded_context.get("canonical_name") or grounded_context.get("query") or "").strip()
+        metadata = grounded_context.get("metadata", {})
+        medication_name = str(
+            grounded_context.get("canonical_name")
+            or grounded_context.get("query")
+            or (metadata.get("medication_name") if isinstance(metadata, dict) else "")
+            or ""
+        ).strip()
         original_query = str(grounded_context.get("original_query") or "").strip()
         selected_query = str(grounded_context.get("selected_query") or "").strip()
         query_candidates = grounded_context.get("query_candidates", [])
-        metadata = grounded_context.get("metadata", {})
         patient_context = metadata.get("patient_context", {}) if isinstance(metadata, dict) else {}
         current_medications = metadata.get("current_medications", []) if isinstance(metadata, dict) else []
 
@@ -1407,6 +1517,7 @@ class AgentsService:
         )
         with self._lock:
             self._conversations[new_id] = conversation
+            self._persist_conversations_locked()
         return conversation
 
     def _append_message(self, conversation_id: str, message: AgentMessage) -> None:
@@ -1415,6 +1526,32 @@ class AgentsService:
             if conversation is None:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
             conversation.messages.append(message)
+            self._persist_conversations_locked()
+
+    def _record_agent_work(
+        self,
+        *,
+        conversation_id: str,
+        assistant_start_index: int,
+        turns: list[AgentChatTurn],
+    ) -> None:
+        conversation = self._conversations.get(conversation_id)
+        if conversation is None or not turns:
+            return
+        assistant_messages = [msg for msg in conversation.messages if msg.role == "assistant"]
+        assistant_slice = assistant_messages[assistant_start_index:]
+        entry = AgentWorkEntry(
+            assistant_base_index=assistant_start_index,
+            turns=turns,
+            assistant_messages=assistant_slice,
+        )
+        conversation.agent_work_history.append(entry)
+        self._persist_conversations_locked()
+
+    def _persist_conversations_locked(self) -> None:
+        if self._conversation_repository is None:
+            return
+        self._conversation_repository.save_conversations(list(self._conversations.values()))
 
 
 def _utcnow() -> datetime:

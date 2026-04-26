@@ -8,6 +8,8 @@ export default function ChatSidebar({
   conversationId,
   onOpenConversation,
   onNewConversation,
+  onDeleteConversation,
+  onDeleteAllConversations,
 }) {
   return (
     <aside className="lg:w-80 w-full bg-surface-container-lowest p-6 border-b lg:border-b-0 lg:border-r border-outline-variant/40 flex flex-col min-h-0">
@@ -16,13 +18,22 @@ export default function ChatSidebar({
           <p className="text-xs uppercase font-bold tracking-[0.2em] text-secondary mb-1">Chat History</p>
           <h2 className="text-xl text-primary font-bold">Pharmacist Agent</h2>
         </div>
-        <button
-          type="button"
-          onClick={onNewConversation}
-          className="px-3 py-2 rounded-xl text-xs font-bold bg-primary-container text-white"
-        >
-          New Chat
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onNewConversation}
+            className="px-3 py-2 rounded-xl text-xs font-bold bg-primary-container text-white"
+          >
+            New Chat
+          </button>
+          <button
+            type="button"
+            onClick={onDeleteAllConversations}
+            className="px-3 py-2 rounded-xl text-xs font-bold border border-error/50 text-error bg-error/10"
+          >
+            Delete All
+          </button>
+        </div>
       </div>
 
       <div className="rounded-2xl border border-outline-variant/40 bg-surface-container-low p-4 mb-4">
@@ -43,20 +54,33 @@ export default function ChatSidebar({
       <div className="space-y-2 flex-1 min-h-0 overflow-y-auto pr-1">
         {conversationHistory.length > 0 ? (
           conversationHistory.map((entry) => (
-            <button
+            <div
               key={entry.conversationId}
-              type="button"
-              onClick={() => onOpenConversation(entry.conversationId)}
               className={
                 conversationId === entry.conversationId
-                  ? 'w-full text-left rounded-xl border border-secondary bg-secondary/10 p-3'
-                  : 'w-full text-left rounded-xl border border-outline-variant/40 bg-surface p-3 hover:bg-surface-container-low'
+                  ? 'w-full rounded-xl border border-secondary bg-secondary/10 p-3'
+                  : 'w-full rounded-xl border border-outline-variant/40 bg-surface p-3 hover:bg-surface-container-low'
               }
             >
-              <p className="text-sm font-semibold text-primary truncate">{entry.title}</p>
-              <p className="text-xs text-on-surface-variant mt-1 truncate">{entry.lastAgent || 'Agent unknown'}</p>
-              <p className="text-[11px] text-on-surface-variant mt-1">{new Date(entry.updatedAt).toLocaleString()}</p>
-            </button>
+              <button
+                type="button"
+                onClick={() => onOpenConversation(entry.conversationId)}
+                className="w-full text-left"
+              >
+                <p className="text-sm font-semibold text-primary truncate">{entry.title}</p>
+                <p className="text-xs text-on-surface-variant mt-1 truncate">{entry.lastAgent || 'Agent unknown'}</p>
+                <p className="text-[11px] text-on-surface-variant mt-1">{new Date(entry.updatedAt).toLocaleString()}</p>
+              </button>
+              <div className="mt-2 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => onDeleteConversation(entry.conversationId)}
+                  className="text-[11px] font-semibold text-error border border-error/40 px-2 py-1 rounded-lg bg-error/10"
+                >
+                  Delete
+                </button>
+              </div>
+            </div>
           ))
         ) : (
           <div className="rounded-xl border border-outline-variant/40 bg-surface p-3 text-xs text-on-surface-variant">

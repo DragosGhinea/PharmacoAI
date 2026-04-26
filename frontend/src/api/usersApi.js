@@ -173,6 +173,24 @@ export function chatWithOrchestrator(userId, payload) {
   });
 }
 
+export function deleteConversation(userId, conversationId) {
+  return apiRequest(`/agents/conversations/${conversationId}`, {
+    method: 'DELETE',
+    headers: {
+      'X-User-Id': userId,
+    },
+  });
+}
+
+export function deleteAllConversations(userId) {
+  return apiRequest('/agents/conversations', {
+    method: 'DELETE',
+    headers: {
+      'X-User-Id': userId,
+    },
+  });
+}
+
 export async function chatWithOrchestratorStream(userId, payload, onEvent, options = {}) {
   const response = await fetch(`${API_BASE_URL}/agents/chat/stream`, {
     method: 'POST',

@@ -300,15 +300,18 @@ export default function ChatTimeline({
           });
 
           const agentWorkBlocks = new Map();
+          const trailingAgentWorkBlocks = [];
           agentWorkEntries.forEach((entry, idx) => {
             if (!entry || !Array.isArray(entry.turns) || entry.turns.length === 0) {
               return;
             }
             const startIndex = Number(entry.assistantBaseIndex || 0);
             const endIndex = Math.max(startIndex + entry.turns.length - 1, 0);
-            const messageIndex = assistantIndexMap[endIndex];
-            if (typeof messageIndex !== 'number') {
-              return;
+            const primaryIndex = assistantIndexMap[startIndex];
+            const fallbackIndex = assistantIndexMap[endIndex];
+            let messageIndex = typeof primaryIndex === 'number' ? primaryIndex : fallbackIndex;
+            if (typeof messageIndex !== 'number' && typeof lastAssistantIndex === 'number' && lastAssistantIndex >= 0) {
+              messageIndex = lastAssistantIndex;
             }
             const items = [];
             const turnCards = entry.turns.map((turn, turnIndex) => (
@@ -324,11 +327,16 @@ export default function ChatTimeline({
                 )
               );
             });
-            agentWorkBlocks.set(messageIndex, (
+            const block = (
               <AgentWorkBox key={`agent-work-${idx}`} compactMode={compactMode}>
                 {items}
               </AgentWorkBox>
-            ));
+            );
+            if (typeof messageIndex !== 'number') {
+              trailingAgentWorkBlocks.push(block);
+              return;
+            }
+            agentWorkBlocks.set(messageIndex, block);
           });
 
           function pushDraftTurnMessage(turn, suffix = 'Draft') {
@@ -377,15 +385,7 @@ export default function ChatTimeline({
               return;
             }
             if (!isVisibleAssistant && shouldIncludeInAgentWork(normalizedMessage)) {
-              const sender = String(normalizedMessage.sender || 'assistant');
-              const content = normalizeFingerprintText(normalizedMessage.content || '');
-              const fingerprint = `${sender}|${content}`;
-              if (content && fingerprint !== lastAssistantFingerprint) {
-                lastAssistantFingerprint = fingerprint;
-                agentWorkItems.push(
-                  renderMessageBubble(normalizedMessage, `${normalizedMessage.timestamp || index}-${index}`)
-                );
-              }
+              return;
             }
 
             if (!isVisibleAssistant) {
@@ -399,6 +399,10 @@ export default function ChatTimeline({
               const sender = String(normalizedMessage.sender || 'assistant');
               const content = normalizeFingerprintText(normalizedMessage.content || '');
               const fingerprint = `${sender}|${content}`;
+              const agentWorkBlock = agentWorkBlocks.get(index);
+              if (agentWorkBlock) {
+                timeline.push(agentWorkBlock);
+              }
               if (!content || fingerprint === lastAssistantFingerprint) {
                 return;
               }
@@ -407,10 +411,6 @@ export default function ChatTimeline({
                 return;
               }
               const bubble = renderMessageBubble(normalizedMessage, `${normalizedMessage.timestamp || index}-${index}`);
-              const agentWorkBlock = agentWorkBlocks.get(index);
-              if (agentWorkBlock) {
-                timeline.push(agentWorkBlock);
-              }
               timeline.push(bubble);
               return;
             }
@@ -425,6 +425,10 @@ export default function ChatTimeline({
             }
             assistantTurnIndex += 1;
           }
+
+          trailingAgentWorkBlocks.forEach((block) => {
+            timeline.push(block);
+          });
 
           return timeline;
         })()

@@ -359,3 +359,22 @@ def get_conversation(
     service: AgentsService = Depends(get_agents_service),
 ) -> AgentConversation:
     return service.get_conversation(conversation_id)
+
+
+@app.delete("/agents/conversations/{conversation_id}")
+def delete_conversation(
+    conversation_id: str,
+    current_user: UserRecord = Depends(get_current_user),
+    service: AgentsService = Depends(get_agents_service),
+) -> dict[str, str]:
+    service.delete_conversation(conversation_id=conversation_id, user_id=current_user.id)
+    return {"detail": "Conversation deleted"}
+
+
+@app.delete("/agents/conversations")
+def delete_all_conversations(
+    current_user: UserRecord = Depends(get_current_user),
+    service: AgentsService = Depends(get_agents_service),
+) -> dict[str, int]:
+    removed = service.delete_all_conversations_for_user(user_id=current_user.id)
+    return {"removed": removed}
