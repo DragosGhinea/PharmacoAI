@@ -33,3 +33,12 @@ async def require_admin(current_user: UserRecord = Depends(get_current_user)) ->
             detail="Admin privileges required",
         )
     return current_user
+
+
+async def require_org_pharmacist(current_user: UserRecord = Depends(get_current_user)) -> UserRecord:
+    if current_user.role == Role.PHARMACIST and not current_user.owner_admin_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Chat is only available to pharmacists who are part of an organization account",
+        )
+    return current_user

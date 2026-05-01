@@ -27,7 +27,6 @@ from .agents_schemas import (
 from .conversation_repository import ConversationRepository
 from .drug_sources import get_grounded_medication_context
 from .schemas import UserRecord
-from .tiers import TIER_FEATURES
 
 
 class AgentsService:
@@ -62,10 +61,7 @@ class AgentsService:
         return list(self._definitions.values())
 
     def list_agents_for_user(self, *, user: UserRecord) -> list[AgentDefinition]:
-        allowed = set(TIER_FEATURES[user.tier]["allowed_agents"])
-        return [
-            agent for agent in self._definitions.values() if any(tag in allowed for tag in agent.style_tags)
-        ]
+        return list(self._definitions.values())
 
     def get_agent(self, agent_id: str) -> AgentDefinition:
         agent = self._definitions.get(agent_id)
@@ -74,14 +70,7 @@ class AgentsService:
         return agent
 
     def get_agent_for_user(self, *, user: UserRecord, agent_id: str) -> AgentDefinition:
-        agent = self.get_agent(agent_id)
-        allowed = TIER_FEATURES[user.tier]["allowed_agents"]
-        if not any(tag in allowed for tag in agent.style_tags):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Agent '{agent_id}' is not available for the user's tier",
-            )
-        return agent
+        return self.get_agent(agent_id)
 
     async def chat_with_agent(
         self,

@@ -32,7 +32,7 @@ from .agents_schemas import (
     StreamCancelRequest,
 )
 from .agents_service import AgentsService
-from .auth import get_current_user, require_admin
+from .auth import get_current_user, require_admin, require_org_pharmacist
 from .deps import get_agents_service, get_billing_service, get_user_service
 from .schemas import (
     AuthLoginRequest,
@@ -40,6 +40,9 @@ from .schemas import (
     ChangePasswordRequest,
     ChangePasswordResponse,
     HealthResponse,
+    MessageAddonCheckoutRequest,
+    MessageAddonConfirmRequest,
+    MessageAddonConfirmResponse,
     MessageSimulationRequest,
     MessageSimulationResponse,
     SubscriptionConfirmRequest,
@@ -54,7 +57,7 @@ from .schemas import (
     to_user_response,
     utcnow,
 )
-from .billing import BillingService
+from .billing import BillingService, MESSAGE_ADDON_PACKS
 from .service import UserService
 from .tiers import TIER_FEATURES, Tier
 
@@ -159,6 +162,7 @@ def auth_login(payload: AuthLoginRequest, service: UserService = Depends(get_use
         role=user.role,
         tier=user.tier,
         is_active=user.is_active,
+        owner_admin_id=user.owner_admin_id,
     )
 
 
@@ -193,6 +197,36 @@ def confirm_subscription(
 ) -> SubscriptionConfirmResponse:
     billing_service.finalize_checkout_session(payload.session_id)
     return SubscriptionConfirmResponse(detail="Subscription activated")
+
+
+@app.get("/subscriptions/addons/packs")
+def list_addon_packs() -> dict:
+    return {
+        pack_id: {"count": info["count"], "price_cents": info["price_cents"]}
+        for pack_id, info in MESSAGE_ADDON_PACKS.items()
+    }
+
+
+@app.post("/subscriptions/addons/checkout", response_model=SubscriptionCheckoutResponse)
+def create_addon_checkout(
+    payload: MessageAddonCheckoutRequest,
+    current_user: UserRecord = Depends(get_current_user),
+    billing_service: BillingService = Depends(get_billing_service),
+) -> SubscriptionCheckoutResponse:
+    return billing_service.create_addon_checkout_session(payload.pack_id, current_user)
+
+
+@app.post("/subscriptions/addons/confirm", response_model=MessageAddonConfirmResponse)
+def confirm_addon_checkout(
+    payload: MessageAddonConfirmRequest,
+    billing_service: BillingService = Depends(get_billing_service),
+) -> MessageAddonConfirmResponse:
+    result = billing_service.finalize_addon_checkout(payload.session_id)
+    return MessageAddonConfirmResponse(
+        detail=f"{result['count']} messages added to your account",
+        count=result["count"],
+        pack_id=result["pack_id"],
+    )
 
 
 @app.post("/subscriptions/webhook")
@@ -323,7 +357,7 @@ def simulate_message(
 
 @app.get("/agents", response_model=AgentListResponse)
 def list_agents(
-    current_user: UserRecord = Depends(get_current_user),
+    current_user: UserRecord = Depends(require_org_pharmacist),
     service: AgentsService = Depends(get_agents_service),
 ) -> AgentListResponse:
     return AgentListResponse(agents=service.list_agents_for_user(user=current_user))
@@ -332,7 +366,7 @@ def list_agents(
 @app.get("/agents/{agent_id}", response_model=AgentDefinition)
 def get_agent(
     agent_id: str,
-    current_user: UserRecord = Depends(get_current_user),
+    current_user: UserRecord = Depends(require_org_pharmacist),
     service: AgentsService = Depends(get_agents_service),
 ) -> AgentDefinition:
     return service.get_agent_for_user(user=current_user, agent_id=agent_id)
@@ -342,7 +376,7 @@ def get_agent(
 async def chat_with_agent(
     agent_id: str,
     payload: AgentChatRequest,
-    current_user: UserRecord = Depends(get_current_user),
+    current_user: UserRecord = Depends(require_org_pharmacist),
     service: AgentsService = Depends(get_agents_service),
 ) -> AgentChatResponse:
     return await service.chat_with_agent(user=current_user, agent_id=agent_id, payload=payload)
@@ -351,18 +385,27 @@ async def chat_with_agent(
 @app.post("/agents/chat", response_model=AgentChatResponse)
 async def chat_with_orchestrator(
     payload: AgentChatRequest,
-    current_user: UserRecord = Depends(get_current_user),
+    current_user: UserRecord = Depends(require_org_pharmacist),
     service: AgentsService = Depends(get_agents_service),
+    user_service: UserService = Depends(get_user_service),
 ) -> AgentChatResponse:
+    sim_result = user_service.simulate_message(current_user.id, payload.message)
+    if not sim_result.accepted:
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=sim_result.reason)
     return await service.chat_with_orchestrator(user=current_user, payload=payload)
 
 
 @app.post("/agents/chat/stream")
 async def chat_with_orchestrator_stream(
     payload: AgentChatRequest,
-    current_user: UserRecord = Depends(get_current_user),
+    current_user: UserRecord = Depends(require_org_pharmacist),
     service: AgentsService = Depends(get_agents_service),
+    user_service: UserService = Depends(get_user_service),
 ) -> StreamingResponse:
+    sim_result = user_service.simulate_message(current_user.id, payload.message)
+    if not sim_result.accepted:
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=sim_result.reason)
+
     queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
     request_id = str(uuid4())
 
@@ -437,7 +480,7 @@ def cancel_chat_stream(
 @app.post("/agents/handoff", response_model=AgentChatResponse)
 async def handoff_between_agents(
     payload: AgentHandoffRequest,
-    current_user: UserRecord = Depends(get_current_user),
+    current_user: UserRecord = Depends(require_org_pharmacist),
     service: AgentsService = Depends(get_agents_service),
 ) -> AgentChatResponse:
     return await service.handoff(user=current_user, payload=payload)

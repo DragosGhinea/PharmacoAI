@@ -45,6 +45,7 @@ class UserRecord(UserBase):
     password: str = ""
     owner_admin_id: str | None = None
     monthly_messages_used: int = 0
+    addon_messages: int = 0
     created_at: datetime
     updated_at: datetime
 
@@ -56,8 +57,10 @@ class UserResponse(BaseModel):
     role: Role
     tier: Tier
     is_active: bool
+    owner_admin_id: str | None = None
     monthly_messages_used: int
     monthly_message_limit: int
+    addon_messages: int
     allowed_agents: list[str]
     created_at: datetime
     updated_at: datetime
@@ -106,6 +109,7 @@ class AuthLoginResponse(BaseModel):
     role: Role
     tier: Tier
     is_active: bool
+    owner_admin_id: str | None = None
 
 
 class ChangePasswordRequest(BaseModel):
@@ -144,12 +148,28 @@ def to_user_response(user: UserRecord) -> UserResponse:
         role=user.role,
         tier=user.tier,
         is_active=user.is_active,
+        owner_admin_id=user.owner_admin_id,
         monthly_messages_used=user.monthly_messages_used,
         monthly_message_limit=tier_features["monthly_message_limit"],
+        addon_messages=user.addon_messages,
         allowed_agents=tier_features["allowed_agents"],
         created_at=user.created_at,
         updated_at=user.updated_at,
     )
+
+
+class MessageAddonCheckoutRequest(BaseModel):
+    pack_id: str = Field(min_length=1, max_length=10)
+
+
+class MessageAddonConfirmRequest(BaseModel):
+    session_id: str = Field(min_length=1, max_length=256)
+
+
+class MessageAddonConfirmResponse(BaseModel):
+    detail: str
+    count: int
+    pack_id: str
 
 
 def utcnow() -> datetime:

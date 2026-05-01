@@ -162,6 +162,27 @@ export function confirmSubscription(sessionId) {
   });
 }
 
+export function listAddonPacks() {
+  return apiRequest('/subscriptions/addons/packs');
+}
+
+export function createAddonCheckout(userId, packId) {
+  return apiRequest('/subscriptions/addons/checkout', {
+    method: 'POST',
+    headers: {
+      'X-User-Id': userId,
+    },
+    body: JSON.stringify({ pack_id: packId }),
+  });
+}
+
+export function confirmAddonCheckout(sessionId) {
+  return apiRequest('/subscriptions/addons/confirm', {
+    method: 'POST',
+    body: JSON.stringify({ session_id: sessionId }),
+  });
+}
+
 export function listAgents(userId) {
   return apiRequest('/agents', {
     headers: {

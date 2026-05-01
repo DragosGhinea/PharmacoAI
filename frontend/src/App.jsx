@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 
-import { confirmSubscription, createSubscriptionCheckout, getMyUser, loginUser } from './api/usersApi';
+import { confirmAddonCheckout, confirmSubscription, createSubscriptionCheckout, getMyUser, loginUser } from './api/usersApi';
 import AdminUsersPanel from './components/AdminUsersPanel';
 import SiteFooter from './components/SiteFooter';
 import TopNav from './components/TopNav';
@@ -58,13 +58,13 @@ function clearBillingSession() {
 const SUBSCRIPTION_PLANS = [
   {
     tier: 'free',
-    name: 'Free',
-    priceLabel: '$0',
+    name: 'Starter',
+    priceLabel: '$10',
     cadence: '/month',
     tagline: 'For solo pharmacies getting started',
     userLimit: '1 admin user',
     messageLimit: '150 messages/month',
-    agents: ['Drug Explainer'],
+    agents: ['Drug Explainer', 'Ingredient Analyst', 'Summary Agent'],
     cardClass: 'bg-white border-slate-200',
     buttonClass: 'bg-slate-900 text-white hover:bg-slate-700',
   },
@@ -601,6 +601,8 @@ function SubscriptionSuccessPage({ checkoutSession }) {
   const accountPath = isAdmin ? '/admin' : '/pharmacist/account';
   const [status, setStatus] = useState('pending');
   const [error, setError] = useState('');
+  const [purchaseType, setPurchaseType] = useState('subscription');
+  const [addonCount, setAddonCount] = useState(0);
 
   useEffect(() => {
     let mounted = true;
@@ -611,6 +613,10 @@ function SubscriptionSuccessPage({ checkoutSession }) {
 
       const params = new URLSearchParams(window.location.search);
       const sessionId = params.get('session_id');
+      const type = params.get('type');
+      if (mounted && type === 'addon') {
+        setPurchaseType('addon');
+      }
       if (!sessionId) {
         if (mounted) {
           setStatus('confirmed');
@@ -619,9 +625,17 @@ function SubscriptionSuccessPage({ checkoutSession }) {
       }
 
       try {
-        await confirmSubscription(sessionId);
-        if (mounted) {
-          setStatus('confirmed');
+        if (type === 'addon') {
+          const response = await confirmAddonCheckout(sessionId);
+          if (mounted) {
+            setAddonCount(response?.count ?? 0);
+            setStatus('confirmed');
+          }
+        } else {
+          await confirmSubscription(sessionId);
+          if (mounted) {
+            setStatus('confirmed');
+          }
         }
       } catch (confirmError) {
         if (mounted) {
@@ -629,7 +643,7 @@ function SubscriptionSuccessPage({ checkoutSession }) {
           if (confirmError instanceof Error) {
             setError(confirmError.message);
           } else {
-            setError('Could not confirm subscription');
+            setError(type === 'addon' ? 'Could not confirm message add-on' : 'Could not confirm subscription');
           }
         }
       }
@@ -641,23 +655,33 @@ function SubscriptionSuccessPage({ checkoutSession }) {
     };
   }, []);
 
+  const isAddon = purchaseType === 'addon';
+  const headlineText = isAddon
+    ? (addonCount > 0
+        ? `Success! ${addonCount} extra messages were added to your account.`
+        : 'Success! Your message add-on was purchased.')
+    : 'Success! Your plan payment was completed.';
+  const subtext = isAddon
+    ? 'Your additional messages are immediately available. They are used after your monthly tier allowance is exhausted and do not expire.'
+    : 'You can now continue to your account and manage your subscription.';
+  const pendingText = isAddon ? 'Crediting your message add-on...' : 'Confirming your subscription...';
+  const failureFallback = isAddon ? 'Could not confirm message add-on.' : 'Could not confirm subscription.';
+
   return (
     <main>
       <section className="px-8 py-20 bg-surface-container-low min-h-[70vh]">
         <div className="max-w-2xl mx-auto rounded-3xl border border-outline-variant/40 bg-surface-container-lowest p-10 shadow-sm text-center">
           <p className="text-xs uppercase tracking-[0.18em] text-secondary font-bold mb-3">Payment complete</p>
-          <h2 className="text-4xl text-primary font-bold mb-4">Success! Your plan payment was completed.</h2>
-          <p className="text-sm text-on-surface-variant mb-8">
-            You can now continue to your account and manage your subscription.
-          </p>
+          <h2 className="text-4xl text-primary font-bold mb-4">{headlineText}</h2>
+          <p className="text-sm text-on-surface-variant mb-8">{subtext}</p>
           {status === 'pending' && (
             <p className="mb-6 rounded-xl bg-surface-container-low border border-outline-variant/40 text-on-surface-variant px-4 py-3 text-sm font-semibold">
-              Confirming your subscription...
+              {pendingText}
             </p>
           )}
           {status === 'failed' && (
             <p className="mb-6 rounded-xl bg-error/10 border border-error/30 text-error px-4 py-3 text-sm font-semibold">
-              {error || 'Could not confirm subscription.'}
+              {error || failureFallback}
             </p>
           )}
           <a
@@ -744,8 +768,8 @@ export default function App() {
   async function handlePharmacistLogin({ email, password }) {
     const user = await loginUser(email, password);
 
-    if (user.role !== 'pharmacist') {
-      throw new Error('This account is not a pharmacist account');
+    if (user.role !== 'pharmacist' && user.role !== 'admin') {
+      throw new Error('This account cannot access the pharmacist chat');
     }
 
     const session = {
@@ -753,6 +777,8 @@ export default function App() {
       email: user.email,
       fullName: user.full_name,
       tier: user.tier,
+      role: user.role,
+      ownerAdminId: user.owner_admin_id ?? null,
     };
 
     persistPharmacistSession(session);
@@ -782,6 +808,8 @@ export default function App() {
       email: user.email,
       fullName: user.full_name,
       tier: user.tier,
+      role: user.role,
+      ownerAdminId: user.owner_admin_id ?? null,
     };
     persistPharmacistSession(session);
     setPharmacistSession(session);
@@ -793,7 +821,9 @@ export default function App() {
         currentRoute={currentRoute}
         isAdminAuthenticated={Boolean(adminSession)}
         isPharmacistAuthenticated={Boolean(pharmacistSession)}
+        pharmacistSession={pharmacistSession}
         onAdminLogout={handleLogout}
+        onPharmacistLogout={handlePharmacistLogout}
       />
       {(() => {
         const checkoutSession = adminSession ?? pharmacistSession ?? billingSession;

@@ -4,6 +4,7 @@ export default function ChatSidebar({
   usedMessages,
   monthlyLimit,
   remainingMessages,
+  addonMessages = 0,
   conversationHistory,
   conversationId,
   onOpenConversation,
@@ -48,6 +49,17 @@ export default function ChatSidebar({
         <p className="text-xs text-on-surface-variant mt-1">{usedMessages}/{monthlyLimit || 'unlimited'} messages used</p>
         {monthlyLimit > 0 && (
           <p className="text-xs text-on-surface-variant mt-1">Remaining this month: {remainingMessages}</p>
+        )}
+        {addonMessages > 0 && (
+          <p className="text-xs font-semibold text-secondary mt-2">+{addonMessages} add-on messages</p>
+        )}
+        {monthlyLimit > 0 && remainingMessages === 0 && addonMessages === 0 && (
+          <a
+            href="/pharmacist/account#addons"
+            className="mt-3 inline-flex w-full justify-center px-3 py-2 rounded-xl text-xs font-bold bg-primary-container text-white"
+          >
+            Buy More Messages
+          </a>
         )}
       </div>
 

@@ -5,7 +5,14 @@ function navLinkClass(isActive) {
   return 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-colors manrope text-sm font-semibold';
 }
 
-export default function TopNav({ currentRoute, isAdminAuthenticated, isPharmacistAuthenticated, onAdminLogout }) {
+export default function TopNav({
+  currentRoute,
+  isAdminAuthenticated,
+  isPharmacistAuthenticated,
+  pharmacistSession,
+  onAdminLogout,
+  onPharmacistLogout,
+}) {
   const isLandingRoute = currentRoute === 'landing';
   const isAdminRoute = currentRoute === 'admin';
   const isPharmacistRoute = currentRoute === 'pharmacist';
@@ -37,20 +44,37 @@ export default function TopNav({ currentRoute, isAdminAuthenticated, isPharmacis
           >
             Log Out
           </button>
-        ) : isPharmacistRoute && isPharmacistAuthenticated ? (
-          <div className="flex items-center gap-2">
-            <a
-              className="bg-primary-container text-white px-4 py-2.5 rounded-lg font-semibold manrope text-sm hover:scale-95 transition-transform duration-150 active:scale-90"
-              href="/pharmacist/chat"
-            >
-              Agent Chat
-            </a>
-            <a
+        ) : isPharmacistAuthenticated ? (
+          <div className="flex items-center gap-3">
+            <div className="text-right">
+              <p className="text-[11px] uppercase tracking-[0.2em] text-on-surface-variant font-semibold">Signed in</p>
+              <p className="text-sm font-semibold text-primary">
+                {pharmacistSession?.fullName || pharmacistSession?.email || 'Pharmacist'}
+              </p>
+            </div>
+            {isPharmacistRoute && (
+              <div className="flex items-center gap-2">
+                <a
+                  className="bg-primary-container text-white px-4 py-2.5 rounded-lg font-semibold manrope text-sm hover:scale-95 transition-transform duration-150 active:scale-90"
+                  href="/pharmacist/chat"
+                >
+                  Agent Chat
+                </a>
+                <a
+                  className="bg-surface-container-low text-primary px-4 py-2.5 rounded-lg font-semibold manrope text-sm hover:bg-surface-container-high transition-colors"
+                  href="/pharmacist/account"
+                >
+                  Account
+                </a>
+              </div>
+            )}
+            <button
               className="bg-surface-container-low text-primary px-4 py-2.5 rounded-lg font-semibold manrope text-sm hover:bg-surface-container-high transition-colors"
-              href="/pharmacist/account"
+              type="button"
+              onClick={onPharmacistLogout}
             >
-              Account
-            </a>
+              Log Out
+            </button>
           </div>
         ) : (
           <a

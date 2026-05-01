@@ -180,17 +180,36 @@ class UserService:
         message_limit = tier_features["monthly_message_limit"]
 
         if user.monthly_messages_used >= message_limit:
+            if user.addon_messages > 0:
+                user.addon_messages -= 1
+                user.updated_at = utcnow()
+                users[idx] = user
+                self.repository.save_users(users)
+                return MessageSimulationResponse(
+                    user_id=user.id,
+                    tier=user.tier,
+                    accepted=True,
+                    reason="Message accepted from addon message pool",
+                    usage={
+                        "used": user.monthly_messages_used,
+                        "limit": message_limit,
+                        "remaining": 0,
+                        "addon_messages_remaining": user.addon_messages,
+                    },
+                    placeholder_agent_reply="",
+                )
             return MessageSimulationResponse(
                 user_id=user.id,
                 tier=user.tier,
                 accepted=False,
-                reason="Monthly message limit reached for this tier",
+                reason="Monthly message limit reached. Purchase additional messages to continue.",
                 usage={
                     "used": user.monthly_messages_used,
                     "limit": message_limit,
                     "remaining": 0,
+                    "addon_messages_remaining": 0,
                 },
-                placeholder_agent_reply="Message blocked. Upgrade plan for more AI interactions.",
+                placeholder_agent_reply="Message blocked. Purchase additional messages or upgrade your plan.",
             )
 
         user.monthly_messages_used += 1
@@ -202,17 +221,24 @@ class UserService:
             user_id=user.id,
             tier=user.tier,
             accepted=True,
-            reason="Message accepted by placeholder AI pipeline",
+            reason="Message accepted",
             usage={
                 "used": user.monthly_messages_used,
                 "limit": message_limit,
                 "remaining": message_limit - user.monthly_messages_used,
+                "addon_messages_remaining": user.addon_messages,
             },
-            placeholder_agent_reply=(
-                "[placeholder-agent] AI response generation will be wired in the next milestone. "
-                f"Prompt length received: {len(prompt)} characters."
-            ),
+            placeholder_agent_reply="",
         )
+
+    def add_addon_messages(self, user_id: str, count: int) -> None:
+        users = self.repository.list_users()
+        idx = next((i for i, user in enumerate(users) if user.id == user_id), None)
+        if idx is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        users[idx].addon_messages += count
+        users[idx].updated_at = utcnow()
+        self.repository.save_users(users)
 
     def authenticate_user(self, email: str, password: str) -> UserRecord:
         users = self.repository.list_users()

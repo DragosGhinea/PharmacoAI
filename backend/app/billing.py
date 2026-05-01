@@ -15,6 +15,12 @@ from .tiers import TIER_FEATURES, Tier
 
 DEFAULT_STRIPE_TEST_KEY = "sk_test_51TOwyYQrjQhNHuTmR91B1znC0zV4Apidm0lEiie1sGUVCdUJfNBZuuVnaSdtiIpy7tMKbvBbGlM4TupbPIbchpyX00lwWW1B12"
 
+MESSAGE_ADDON_PACKS: dict[str, dict] = {
+    "5":  {"count": 5,  "price_cents": 99},
+    "10": {"count": 10, "price_cents": 199},
+    "50": {"count": 50, "price_cents": 899},
+}
+
 
 class BillingService:
     def __init__(self, file_path: Path, user_service: UserService) -> None:
@@ -154,6 +160,105 @@ class BillingService:
             self.file_path.parent.mkdir(parents=True, exist_ok=True)
             with self.file_path.open("w", encoding="utf-8") as file_pointer:
                 json.dump(payload, file_pointer, indent=2)
+
+    def create_addon_checkout_session(
+        self,
+        pack_id: str,
+        current_user: UserRecord,
+    ) -> SubscriptionCheckoutResponse:
+        pack = MESSAGE_ADDON_PACKS.get(pack_id)
+        if pack is None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Unknown addon pack: {pack_id}")
+
+        count = int(pack["count"])
+        price_cents = int(pack["price_cents"])
+        addon_id = f"addon-{uuid4().hex[:12]}"
+
+        addon_record: dict = {
+            "id": addon_id,
+            "user_id": current_user.id,
+            "pack_id": pack_id,
+            "count": count,
+            "price_cents": price_cents,
+            "status": "pending_payment",
+            "checkout_session_id": None,
+        }
+
+        stripe_secret_key = os.getenv("STRIPE_SECRET_KEY", DEFAULT_STRIPE_TEST_KEY)
+        frontend_base_url = os.getenv("FRONTEND_BASE_URL", "http://localhost:5173")
+        stripe.api_key = stripe_secret_key
+
+        try:
+            checkout_session = stripe.checkout.Session.create(
+                mode="payment",
+                customer_email=current_user.email,
+                metadata={
+                    "addon_id": addon_id,
+                    "user_id": current_user.id,
+                    "pack_id": pack_id,
+                    "count": count,
+                    "type": "message_addon",
+                },
+                line_items=[
+                    {
+                        "price_data": {
+                            "currency": "usd",
+                            "product_data": {
+                                "name": f"PharmacoAI Message Add-on — {count} messages",
+                                "description": f"Purchase {count} additional AI messages for your account. Messages do not expire.",
+                            },
+                            "unit_amount": price_cents,
+                        },
+                        "quantity": 1,
+                    }
+                ],
+                success_url=f"{frontend_base_url}/subscribe/success?session_id={{CHECKOUT_SESSION_ID}}&type=addon",
+                cancel_url=f"{frontend_base_url}/pharmacist/account?checkout=cancel",
+            )
+        except Exception as stripe_error:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Could not initialize Stripe checkout: {stripe_error}",
+            )
+
+        addon_record["checkout_session_id"] = checkout_session.id
+        payload = self._read_payload()
+        payload.setdefault("addon_purchases", []).append(addon_record)
+        with self._lock:
+            self.file_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.file_path.open("w", encoding="utf-8") as file_pointer:
+                json.dump(payload, file_pointer, indent=2)
+
+        return SubscriptionCheckoutResponse(
+            subscription_id=addon_id,
+            checkout_session_id=checkout_session.id,
+            checkout_url=checkout_session.url,
+        )
+
+    def finalize_addon_checkout(self, session_id: str) -> dict:
+        payload = self._read_payload()
+        addon_purchases = payload.get("addon_purchases", [])
+
+        for record in addon_purchases:
+            if record.get("checkout_session_id") != session_id:
+                continue
+            if record.get("status") == "active":
+                return {"count": int(record["count"]), "pack_id": str(record["pack_id"])}
+
+            record["status"] = "active"
+            user_id = str(record["user_id"])
+            count = int(record["count"])
+            pack_id = str(record["pack_id"])
+            self.user_service.add_addon_messages(user_id, count)
+
+            with self._lock:
+                self.file_path.parent.mkdir(parents=True, exist_ok=True)
+                with self.file_path.open("w", encoding="utf-8") as file_pointer:
+                    json.dump(payload, file_pointer, indent=2)
+
+            return {"count": count, "pack_id": pack_id}
+
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Addon purchase not found")
 
     def get_active_subscription(self, user_id: str) -> dict | None:
         payload = self._read_payload()

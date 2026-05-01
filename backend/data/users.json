@@ -10,6 +10,7 @@
       "password": "admin123",
       "owner_admin_id": null,
       "monthly_messages_used": 0,
+      "addon_messages": 0,
       "created_at": "2026-04-17T00:00:00Z",
       "updated_at": "2026-04-17T00:00:00Z"
     },
@@ -22,9 +23,10 @@
       "id": "usr-e3d000a720",
       "password": "123456",
       "owner_admin_id": null,
-      "monthly_messages_used": 2,
+      "monthly_messages_used": 6,
+      "addon_messages": 10,
       "created_at": "2026-04-17T17:55:56.103442Z",
-      "updated_at": "2026-04-26T18:31:19.695886Z"
+      "updated_at": "2026-05-01T21:10:06.428907Z"
     },
     {
       "email": "test@test.com",
@@ -36,6 +38,7 @@
       "password": "123456789",
       "owner_admin_id": null,
       "monthly_messages_used": 1,
+      "addon_messages": 0,
       "created_at": "2026-04-17T18:13:03.179525Z",
       "updated_at": "2026-04-22T11:27:32.617133Z"
     },
@@ -49,6 +52,7 @@
       "password": "test1234",
       "owner_admin_id": null,
       "monthly_messages_used": 0,
+      "addon_messages": 0,
       "created_at": "2026-04-22T12:38:30.987358Z",
       "updated_at": "2026-04-22T12:38:30.987358Z"
     },
@@ -62,6 +66,7 @@
       "password": "test1234",
       "owner_admin_id": null,
       "monthly_messages_used": 0,
+      "addon_messages": 0,
       "created_at": "2026-04-22T12:47:01.647615Z",
       "updated_at": "2026-04-22T12:47:01.647615Z"
     },
@@ -75,6 +80,7 @@
       "password": "max123",
       "owner_admin_id": null,
       "monthly_messages_used": 0,
+      "addon_messages": 0,
       "created_at": "2026-04-22T12:55:20.720175Z",
       "updated_at": "2026-04-22T12:55:20.720175Z"
     },
@@ -88,6 +94,7 @@
       "password": "test123",
       "owner_admin_id": null,
       "monthly_messages_used": 0,
+      "addon_messages": 0,
       "created_at": "2026-04-22T13:00:48.198160Z",
       "updated_at": "2026-04-22T13:00:48.198160Z"
     }

@@ -12,10 +12,10 @@ class Tier(str, Enum):
 TIER_FEATURES = {
     Tier.FREE: {
         "monthly_message_limit": 150,
-        "allowed_agents": ["drug-explainer"],
+        "allowed_agents": ["drug-explainer", "ingredient-analyst", "summary-agent"],
         "admin_user_limit": 1,
         "supports_message_addons": True,
-        "monthly_price_cents": 0,
+        "monthly_price_cents": 1000,
     },
     Tier.PRO: {
         "monthly_message_limit": 3000,
