@@ -46,15 +46,18 @@ class AgentsService:
     def _has_recent_medication_flow(self, conversation: AgentConversation) -> bool:
         if not conversation.agent_work_history:
             return False
-        last_entry = conversation.agent_work_history[-1]
-        for turn in reversed(last_entry.turns or []):
-            if turn.agent_id in {
-                "medication-normalization-agent",
-                "medication-evidence-gathering-agent",
-                "medication-answer-synthesis-agent",
-                "layman-translator-agent",
-            }:
-                return True
+        medication_pipeline_agents = {
+            "medication-normalization-agent",
+            "medication-evidence-gathering-agent",
+            "medication-answer-synthesis-agent",
+            "layman-translator-agent",
+            "medication-info-agent",
+            "safety-contraindication-agent",
+        }
+        for entry in reversed(conversation.agent_work_history[-3:]):
+            for turn in entry.turns or []:
+                if turn.agent_id in medication_pipeline_agents:
+                    return True
         return False
 
     def list_agents(self) -> list[AgentDefinition]:
@@ -97,10 +100,32 @@ class AgentsService:
         assistant_start_index = len([msg for msg in conversation.messages if msg.role == "assistant"])
         general_agent = self.get_agent_for_user(user=user, agent_id="pharmacist-general-agent")
         triage_prompt = (
-            "Return INTENT_JSON on the first line with keys: intent (medication|general|unclear), "
-            "confidence (0-1), rationale, medication_name (optional). Then a blank line, then RESPONSE. "
-            "If intent is medication, still write a short acknowledgement in RESPONSE.\n\n"
-            f"User message: {payload.message}"
+            "Classify the user's LATEST turn for routing. Use the conversation history above as primary context.\n\n"
+            "Return on the first line a JSON object with keys: intent (medication|general|unclear), "
+            "confidence (0-1), rationale, medication_name (optional). "
+            "Then a blank line, then a short conversational RESPONSE to the user.\n\n"
+            "Decision rules (apply in order):\n"
+            "  1. intent=\"medication\" ONLY when the user explicitly names a specific medication as the NEW subject "
+            "of this turn AND asks for facts about it (indications, dose, interactions, contraindications, label info) "
+            "that were not already covered earlier in the conversation. A fresh lookup must be warranted.\n"
+            "  2. intent=\"general\" when the user is:\n"
+            "       - asking a follow-up that can be answered from prior turns or general pharmacy knowledge\n"
+            "       - asking a conceptual / mechanism / workflow / counseling / definitions / safety-practice question\n"
+            "       - greeting, clarifying, or chatting without naming a specific medication as a new lookup target\n"
+            "  3. intent=\"unclear\" ONLY if neither rule applies. Default to \"general\" when in doubt.\n\n"
+            "Important: follow-ups in an ongoing chat are almost ALWAYS \"general\" — even if the prior turn was about a medication, "
+            "questions like \"why?\", \"and for elderly patients?\", \"what about pregnancy?\", \"can you explain that?\" should be answered "
+            "from history and general knowledge, NOT trigger a new medication lookup.\n\n"
+            "Examples:\n"
+            "  \"what is the half-life of metoprolol?\" (no prior context on metoprolol) -> medication, confidence 0.9\n"
+            "  \"and for elderly patients?\" (after metoprolol discussion) -> general, confidence 0.9\n"
+            "  \"how do beta-blockers work in general?\" -> general, confidence 0.9\n"
+            "  \"hi, can you help me?\" -> general, confidence 0.95\n"
+            "  \"tell me about warfarin\" (first mention) -> medication, confidence 0.9\n"
+            "  \"why does that interact with NSAIDs?\" (after warfarin discussion) -> general, confidence 0.85\n\n"
+            f"User message: {payload.message}\n\n"
+            "In the RESPONSE section: if intent is general, give your full conversational answer. "
+            "If intent is medication, write a brief acknowledgement only — the medication pipeline will produce the answer."
         )
         conversation = self._get_or_create_conversation(
             payload.conversation_id,
@@ -118,11 +143,19 @@ class AgentsService:
         except (TypeError, ValueError):
             confidence = 0.0
         medication_guess = self._extract_medication_guess(payload.message)
-        follow_up_without_medication = (
-            not medication_guess and self._has_recent_medication_flow(conversation)
+        has_recent_med_flow = self._has_recent_medication_flow(conversation)
+        follow_up_without_medication = not medication_guess and has_recent_med_flow
+
+        # Default to conversational. Only fire medication analysis when the LLM affirmatively
+        # classifies the turn as a medication lookup with reasonable confidence AND there is
+        # a concrete medication subject to look up.
+        med_name_from_triage = str(triage_payload.get("medication_name") or "").strip()
+        should_call_med_analysis = (
+            intent == "medication"
+            and confidence >= 0.6
+            and bool(medication_guess or med_name_from_triage)
         )
-        should_call_med_analysis = not (intent == "general" and confidence >= 0.6)
-        if follow_up_without_medication and intent == "medication":
+        if follow_up_without_medication:
             should_call_med_analysis = False
 
         triage_call = None
@@ -140,9 +173,9 @@ class AgentsService:
             if isinstance(tool_payload, dict) and tool_payload:
                 triage_payload = {**triage_payload, **tool_payload}
 
-        trigger_medication_flow = bool(triage_payload.get("trigger_medication_flow"))
-        if not should_call_med_analysis and intent == "general":
-            trigger_medication_flow = False
+        trigger_medication_flow = (
+            should_call_med_analysis and bool(triage_payload.get("trigger_medication_flow"))
+        )
         if follow_up_without_medication:
             trigger_medication_flow = False
         medication_name = str(triage_payload.get("medication_name") or "").strip()
