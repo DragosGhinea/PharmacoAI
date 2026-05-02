@@ -1,13 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 
-import { createUser, deleteUser, listTiers, listUsers, updateUser } from '../api/usersApi';
+import { createUser, deleteUser, getMyUser, listTiers, listUsers } from '../api/usersApi';
 
 const EMPTY_FORM = {
   email: '',
   password: '',
   full_name: '',
-  tier: 'free',
-  role: 'pharmacist',
   is_active: true,
 };
 
@@ -30,15 +28,16 @@ function toErrorMessage(error) {
 export default function AdminUsersPanel({ adminId }) {
   const [users, setUsers] = useState([]);
   const [tiers, setTiers] = useState([]);
+  const [adminProfile, setAdminProfile] = useState(null);
   const [form, setForm] = useState(EMPTY_FORM);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
 
-  const tierOptions = useMemo(
-    () => tiers.map((tierData) => ({ label: tierData.tier.toUpperCase(), value: tierData.tier })),
-    [tiers]
-  );
+  const currentPlan = useMemo(() => {
+    const matchedTier = tiers.find((tierData) => tierData.tier === adminProfile?.tier);
+    return matchedTier ?? null;
+  }, [tiers, adminProfile]);
 
   async function loadData() {
     if (!adminId) {
@@ -49,9 +48,10 @@ export default function AdminUsersPanel({ adminId }) {
     setBusy(true);
     setError('');
     try {
-      const [usersPayload, tiersPayload] = await Promise.all([listUsers(adminId), listTiers()]);
+      const [usersPayload, tiersPayload, profilePayload] = await Promise.all([listUsers(adminId), listTiers(), getMyUser(adminId)]);
       setUsers(usersPayload);
       setTiers(tiersPayload);
+      setAdminProfile(profilePayload);
     } catch (loadError) {
       setError(toErrorMessage(loadError));
     } finally {
@@ -86,21 +86,6 @@ export default function AdminUsersPanel({ adminId }) {
     }
   }
 
-  async function handleTierChange(userId, tier) {
-    setBusy(true);
-    setMessage('');
-    setError('');
-    try {
-      await updateUser(adminId, userId, { tier });
-      setMessage('Tier updated.');
-      await loadData();
-    } catch (updateError) {
-      setError(toErrorMessage(updateError));
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function handleDeleteUser(userId) {
     setBusy(true);
     setMessage('');
@@ -122,9 +107,14 @@ export default function AdminUsersPanel({ adminId }) {
         <div className="lg:col-span-4 bg-surface-container-lowest rounded-3xl p-8 border border-outline-variant/40 shadow-sm">
           <p className="text-xs uppercase font-bold tracking-[0.2em] text-secondary mb-2">Admin Panel</p>
           <h2 className="text-3xl text-primary font-bold mb-3">Create Pharmacist Users</h2>
-          <p className="text-sm text-on-surface-variant mb-8">
-            Keep onboarding internal teams simple while assigning feature access by tier.
+          <p className="text-sm text-on-surface-variant mb-4">
+            Pharmacists you add are automatically assigned to your subscription plan tier.
           </p>
+          {currentPlan && (
+            <p className="mb-6 rounded-xl border border-outline-variant/40 bg-surface-container-low px-3 py-2 text-xs font-semibold text-on-surface-variant">
+              Current plan: {currentPlan.tier.toUpperCase()} · Seat limit {currentPlan.admin_user_limit} users
+            </p>
+          )}
 
           <form className="space-y-4" onSubmit={handleCreateUser}>
             <label className="block">
@@ -157,27 +147,6 @@ export default function AdminUsersPanel({ adminId }) {
                 onChange={(event) => setForm((current) => ({ ...current, full_name: event.target.value }))}
                 required
               />
-            </label>
-
-            <label className="block">
-              <span className="text-xs font-bold text-on-surface-variant uppercase tracking-widest">Tier</span>
-              <div className="relative mt-2">
-                <select
-                  className="block w-full appearance-none rounded-xl border-outline-variant/60 bg-surface px-3 py-2 pr-10 text-sm"
-                  value={form.tier}
-                  onChange={(event) => setForm((current) => ({ ...current, tier: event.target.value }))}
-                >
-                  {tierOptions.length === 0 && <option value="free">FREE</option>}
-                  {tierOptions.map((tier) => (
-                    <option key={tier.value} value={tier.value}>
-                      {tier.label}
-                    </option>
-                  ))}
-                </select>
-                <span className="material-symbols-outlined pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-on-surface-variant">
-                  keyboard_arrow_down
-                </span>
-              </div>
             </label>
 
             <button
@@ -219,28 +188,11 @@ export default function AdminUsersPanel({ adminId }) {
                   <h4 className="text-primary font-bold text-lg">{user.full_name}</h4>
                   <p className="text-sm text-on-surface-variant">{user.email}</p>
                   <p className="text-xs text-on-surface-variant mt-1">
-                    {user.role.toUpperCase()} · {user.monthly_messages_used}/{user.monthly_message_limit} messages used
+                    {user.role.toUpperCase()} · Plan {user.tier.toUpperCase()} · {user.monthly_messages_used}/{user.monthly_message_limit} messages used
                   </p>
                 </div>
 
                 <div className="flex items-center gap-3">
-                  <div className="relative">
-                    <select
-                      className="block appearance-none rounded-xl border-outline-variant/60 bg-surface px-3 py-2 pr-10 text-sm"
-                      value={user.tier}
-                      onChange={(event) => handleTierChange(user.id, event.target.value)}
-                      disabled={busy || user.role === 'admin'}
-                    >
-                      {tierOptions.map((tier) => (
-                        <option key={tier.value} value={tier.value}>
-                          {tier.label}
-                        </option>
-                      ))}
-                    </select>
-                    <span className="material-symbols-outlined pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-on-surface-variant">
-                      keyboard_arrow_down
-                    </span>
-                  </div>
                   <button
                     className="rounded-xl px-3 py-2 text-sm font-bold text-error hover:bg-error/10 transition-colors disabled:opacity-40"
                     type="button"
@@ -255,7 +207,7 @@ export default function AdminUsersPanel({ adminId }) {
 
             {!busy && users.length === 0 && (
               <div className="rounded-2xl border border-dashed border-outline-variant/50 px-4 py-6 text-sm text-on-surface-variant">
-                No users found. Create your first pharmacist account.
+                No pharmacists found for this admin account. Create your first pharmacist user.
               </div>
             )}
           </div>

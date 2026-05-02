@@ -9,6 +9,10 @@ from time import perf_counter
 from datetime import datetime, timezone
 from uuid import uuid4
 
+import stripe
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+
 from fastapi import HTTPException, status
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,16 +32,23 @@ from .agents_schemas import (
     StreamCancelRequest,
 )
 from .agents_service import AgentsService
-from .auth import get_current_user, require_admin
-from .deps import get_agents_service, get_user_service
+from .auth import get_current_user, require_admin, require_org_pharmacist
+from .deps import get_agents_service, get_billing_service, get_user_service
 from .schemas import (
     AuthLoginRequest,
     AuthLoginResponse,
     ChangePasswordRequest,
     ChangePasswordResponse,
     HealthResponse,
+    MessageAddonCheckoutRequest,
+    MessageAddonConfirmRequest,
+    MessageAddonConfirmResponse,
     MessageSimulationRequest,
     MessageSimulationResponse,
+    SubscriptionConfirmRequest,
+    SubscriptionConfirmResponse,
+    SubscriptionCheckoutRequest,
+    SubscriptionCheckoutResponse,
     TierInfo,
     UserCreate,
     UserRecord,
@@ -46,6 +57,7 @@ from .schemas import (
     to_user_response,
     utcnow,
 )
+from .billing import BillingService, MESSAGE_ADDON_PACKS
 from .service import UserService
 from .tiers import TIER_FEATURES, Tier
 
@@ -150,6 +162,7 @@ def auth_login(payload: AuthLoginRequest, service: UserService = Depends(get_use
         role=user.role,
         tier=user.tier,
         is_active=user.is_active,
+        owner_admin_id=user.owner_admin_id,
     )
 
 
@@ -160,19 +173,118 @@ def list_tiers() -> list[TierInfo]:
             tier=tier,
             monthly_message_limit=features["monthly_message_limit"],
             allowed_agents=features["allowed_agents"],
+            admin_user_limit=features["admin_user_limit"],
+            supports_message_addons=features["supports_message_addons"],
+            monthly_price_cents=features["monthly_price_cents"],
         )
         for tier, features in TIER_FEATURES.items()
     ]
 
 
-@app.get("/users", response_model=list[UserResponse], dependencies=[Depends(require_admin)])
-def list_users(service: UserService = Depends(get_user_service)) -> list[UserResponse]:
-    return [to_user_response(user) for user in service.list_users()]
+@app.post("/subscriptions/checkout", response_model=SubscriptionCheckoutResponse)
+def create_subscription_checkout(
+    payload: SubscriptionCheckoutRequest,
+    current_user: UserRecord = Depends(get_current_user),
+    billing_service: BillingService = Depends(get_billing_service),
+) -> SubscriptionCheckoutResponse:
+    return billing_service.create_checkout_session(payload, current_user)
+
+
+@app.post("/subscriptions/confirm", response_model=SubscriptionConfirmResponse)
+def confirm_subscription(
+    payload: SubscriptionConfirmRequest,
+    billing_service: BillingService = Depends(get_billing_service),
+) -> SubscriptionConfirmResponse:
+    billing_service.finalize_checkout_session(payload.session_id)
+    return SubscriptionConfirmResponse(detail="Subscription activated")
+
+
+@app.get("/subscriptions/addons/packs")
+def list_addon_packs() -> dict:
+    return {
+        pack_id: {"count": info["count"], "price_cents": info["price_cents"]}
+        for pack_id, info in MESSAGE_ADDON_PACKS.items()
+    }
+
+
+@app.post("/subscriptions/addons/checkout", response_model=SubscriptionCheckoutResponse)
+def create_addon_checkout(
+    payload: MessageAddonCheckoutRequest,
+    current_user: UserRecord = Depends(get_current_user),
+    billing_service: BillingService = Depends(get_billing_service),
+) -> SubscriptionCheckoutResponse:
+    return billing_service.create_addon_checkout_session(payload.pack_id, current_user)
+
+
+@app.post("/subscriptions/addons/confirm", response_model=MessageAddonConfirmResponse)
+def confirm_addon_checkout(
+    payload: MessageAddonConfirmRequest,
+    billing_service: BillingService = Depends(get_billing_service),
+) -> MessageAddonConfirmResponse:
+    result = billing_service.finalize_addon_checkout(payload.session_id)
+    return MessageAddonConfirmResponse(
+        detail=f"{result['count']} messages added to your account",
+        count=result["count"],
+        pack_id=result["pack_id"],
+    )
+
+
+@app.post("/subscriptions/webhook")
+async def stripe_webhook(
+    request: Request,
+    stripe_signature: str | None = Header(default=None, alias="Stripe-Signature"),
+    billing_service: BillingService = Depends(get_billing_service),
+) -> dict[str, str]:
+    payload = await request.body()
+    webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+
+    if webhook_secret:
+        try:
+            event = stripe.Webhook.construct_event(payload, stripe_signature, webhook_secret)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid webhook signature: {exc}")
+    else:
+        try:
+            event = json.loads(payload.decode("utf-8"))
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid webhook payload: {exc}")
+
+    if event.get("type") == "checkout.session.completed":
+        session = event.get("data", {}).get("object", {})
+        session_id = session.get("id")
+        if session_id:
+            billing_service.finalize_checkout_session(session_id)
+
+    return {"status": "ok"}
+
+
+@app.get("/users", response_model=list[UserResponse])
+def list_users(
+    current_admin: UserRecord = Depends(require_admin),
+    service: UserService = Depends(get_user_service),
+) -> list[UserResponse]:
+    return [to_user_response(user) for user in service.list_users_for_admin(current_admin.id)]
 
 
 @app.get("/users/me", response_model=UserResponse)
-def get_me(current_user: UserRecord = Depends(get_current_user)) -> UserResponse:
-    return to_user_response(current_user)
+def get_me(
+    current_user: UserRecord = Depends(get_current_user),
+    billing_service: BillingService = Depends(get_billing_service),
+) -> UserResponse:
+    user_response = to_user_response(current_user)
+    active_subscription = billing_service.get_active_subscription(current_user.id)
+    if active_subscription and active_subscription.get("tier"):
+        tier_value = active_subscription["tier"]
+        tier = Tier(tier_value)
+        tier_features = TIER_FEATURES[tier]
+        user_response = user_response.model_copy(
+            update={
+                "tier": tier,
+                "monthly_message_limit": tier_features["monthly_message_limit"],
+                "allowed_agents": tier_features["allowed_agents"],
+            }
+        )
+    return user_response
 
 
 @app.post("/users/me/password", response_model=ChangePasswordResponse)
@@ -199,21 +311,34 @@ def get_user(
     return to_user_response(service.get_user(user_id))
 
 
-@app.post("/users", response_model=UserResponse, dependencies=[Depends(require_admin)])
-def create_user(payload: UserCreate, service: UserService = Depends(get_user_service)) -> UserResponse:
-    user = service.create_user(payload)
+@app.post("/users", response_model=UserResponse)
+def create_user(
+    payload: UserCreate,
+    current_admin: UserRecord = Depends(require_admin),
+    service: UserService = Depends(get_user_service),
+) -> UserResponse:
+    user = service.create_user_for_admin(current_admin, payload)
     return to_user_response(user)
 
 
-@app.put("/users/{user_id}", response_model=UserResponse, dependencies=[Depends(require_admin)])
-def update_user(user_id: str, payload: UserUpdate, service: UserService = Depends(get_user_service)) -> UserResponse:
-    user = service.update_user(user_id, payload)
+@app.put("/users/{user_id}", response_model=UserResponse)
+def update_user(
+    user_id: str,
+    payload: UserUpdate,
+    current_admin: UserRecord = Depends(require_admin),
+    service: UserService = Depends(get_user_service),
+) -> UserResponse:
+    user = service.update_user_for_admin(current_admin, user_id, payload)
     return to_user_response(user)
 
 
-@app.delete("/users/{user_id}", dependencies=[Depends(require_admin)])
-def delete_user(user_id: str, service: UserService = Depends(get_user_service)) -> dict[str, str]:
-    service.delete_user(user_id)
+@app.delete("/users/{user_id}")
+def delete_user(
+    user_id: str,
+    current_admin: UserRecord = Depends(require_admin),
+    service: UserService = Depends(get_user_service),
+) -> dict[str, str]:
+    service.delete_user_for_admin(current_admin, user_id)
     return {"detail": "User deleted"}
 
 
@@ -232,7 +357,7 @@ def simulate_message(
 
 @app.get("/agents", response_model=AgentListResponse)
 def list_agents(
-    current_user: UserRecord = Depends(get_current_user),
+    current_user: UserRecord = Depends(require_org_pharmacist),
     service: AgentsService = Depends(get_agents_service),
 ) -> AgentListResponse:
     return AgentListResponse(agents=service.list_agents_for_user(user=current_user))
@@ -241,7 +366,7 @@ def list_agents(
 @app.get("/agents/{agent_id}", response_model=AgentDefinition)
 def get_agent(
     agent_id: str,
-    current_user: UserRecord = Depends(get_current_user),
+    current_user: UserRecord = Depends(require_org_pharmacist),
     service: AgentsService = Depends(get_agents_service),
 ) -> AgentDefinition:
     return service.get_agent_for_user(user=current_user, agent_id=agent_id)
@@ -251,7 +376,7 @@ def get_agent(
 async def chat_with_agent(
     agent_id: str,
     payload: AgentChatRequest,
-    current_user: UserRecord = Depends(get_current_user),
+    current_user: UserRecord = Depends(require_org_pharmacist),
     service: AgentsService = Depends(get_agents_service),
 ) -> AgentChatResponse:
     return await service.chat_with_agent(user=current_user, agent_id=agent_id, payload=payload)
@@ -260,18 +385,27 @@ async def chat_with_agent(
 @app.post("/agents/chat", response_model=AgentChatResponse)
 async def chat_with_orchestrator(
     payload: AgentChatRequest,
-    current_user: UserRecord = Depends(get_current_user),
+    current_user: UserRecord = Depends(require_org_pharmacist),
     service: AgentsService = Depends(get_agents_service),
+    user_service: UserService = Depends(get_user_service),
 ) -> AgentChatResponse:
+    sim_result = user_service.simulate_message(current_user.id, payload.message)
+    if not sim_result.accepted:
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=sim_result.reason)
     return await service.chat_with_orchestrator(user=current_user, payload=payload)
 
 
 @app.post("/agents/chat/stream")
 async def chat_with_orchestrator_stream(
     payload: AgentChatRequest,
-    current_user: UserRecord = Depends(get_current_user),
+    current_user: UserRecord = Depends(require_org_pharmacist),
     service: AgentsService = Depends(get_agents_service),
+    user_service: UserService = Depends(get_user_service),
 ) -> StreamingResponse:
+    sim_result = user_service.simulate_message(current_user.id, payload.message)
+    if not sim_result.accepted:
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=sim_result.reason)
+
     queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
     request_id = str(uuid4())
 
@@ -346,7 +480,7 @@ def cancel_chat_stream(
 @app.post("/agents/handoff", response_model=AgentChatResponse)
 async def handoff_between_agents(
     payload: AgentHandoffRequest,
-    current_user: UserRecord = Depends(get_current_user),
+    current_user: UserRecord = Depends(require_org_pharmacist),
     service: AgentsService = Depends(get_agents_service),
 ) -> AgentChatResponse:
     return await service.handoff(user=current_user, payload=payload)

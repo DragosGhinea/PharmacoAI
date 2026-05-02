@@ -15,6 +15,7 @@ import {
   hasVisibleTimelineMessages,
   persistPharmacistChatHistory,
   readPharmacistChatHistory,
+  shouldDisplayAssistantMessage,
   upsertConversationHistoryEntry,
 } from '../utils/pharmacistChatUtils';
 
@@ -185,7 +186,9 @@ export default function PharmacistChatPage({ pharmacistSession }) {
     setError('');
     setMessageInfo('');
     setChatTurns([]);
-    const assistantBaseIndexSnapshot = conversationMessages.filter((item) => item?.role === 'assistant').length;
+    const assistantBaseIndexSnapshot = conversationMessages.filter(
+      (item, idx, arr) => item?.role === 'assistant' && shouldDisplayAssistantMessage(item, idx, arr)
+    ).length;
     setActiveAssistantBaseIndex(assistantBaseIndexSnapshot);
 
     if (optimisticUserMessage) {
@@ -232,29 +235,6 @@ export default function PharmacistChatPage({ pharmacistSession }) {
           }
           if (event?.type === 'step_completed') {
             upsertStreamedStep(event, 'completed');
-            const stageOutput = String(event?.stage_output || '').trim();
-            const stageAgent = String(event?.agent_id || 'agent');
-            if (stageOutput) {
-              const provisionalTimestamp = new Date().toISOString();
-              setConversationMessages((current) => {
-                const fingerprint = `${stageAgent}|${stageOutput}`;
-                const alreadyPresent = current.some(
-                  (item) => item?.role === 'assistant' && `${String(item?.sender || 'assistant')}|${String(item?.content || '').trim()}` === fingerprint
-                );
-                if (alreadyPresent) {
-                  return current;
-                }
-                return [
-                  ...current,
-                  {
-                    role: 'assistant',
-                    sender: stageAgent,
-                    content: stageOutput,
-                    timestamp: provisionalTimestamp,
-                  },
-                ];
-              });
-            }
           }
         },
         {
@@ -345,8 +325,9 @@ export default function PharmacistChatPage({ pharmacistSession }) {
   const tierLabel = userProfile?.tier ?? pharmacistSession.tier;
   const usedMessages = userProfile?.monthly_messages_used ?? 0;
   const monthlyLimit = userProfile?.monthly_message_limit ?? 0;
+  const addonMessages = userProfile?.addon_messages ?? 0;
   const remainingMessages = monthlyLimit > 0 ? Math.max(monthlyLimit - usedMessages, 0) : 0;
-  const isLimitReached = monthlyLimit > 0 && usedMessages >= monthlyLimit;
+  const isLimitReached = monthlyLimit > 0 && usedMessages >= monthlyLimit && addonMessages === 0;
 
   async function reloadConversation() {
     if (!conversationId) {
@@ -385,7 +366,6 @@ export default function PharmacistChatPage({ pharmacistSession }) {
       setAgentWorkHistory(response.agent_work_history || []);
       setActiveAssistantBaseIndex(0);
       setChatTurns([]);
-      setAgentWorkHistory([]);
       setMessageInfo(`Conversation ID: ${targetConversationId}`);
     } catch (openError) {
       if (openError instanceof Error) {
@@ -447,6 +427,20 @@ export default function PharmacistChatPage({ pharmacistSession }) {
   const hasMessages = hasVisibleTimelineMessages(conversationMessages);
   const hasStartedConversation = Boolean(conversationId || hasMessages || isSending);
 
+  if (userProfile && userProfile.role === 'pharmacist' && !userProfile.owner_admin_id) {
+    return (
+      <main className="bg-surface-container-low min-h-[calc(100vh-80px)] flex items-center justify-center p-8">
+        <div className="max-w-md w-full text-center p-10 bg-surface-container-lowest rounded-3xl shadow-sm border border-outline-variant/40">
+          <span className="material-symbols-outlined text-5xl text-on-surface-variant mb-4 block">domain_disabled</span>
+          <h2 className="text-2xl font-bold text-primary mb-3">Organization Required</h2>
+          <p className="text-on-surface-variant text-sm leading-relaxed">
+            Chat is only available to pharmacists who are part of an organization account. Please contact your administrator to be added to an organization.
+          </p>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="bg-surface-container-low min-h-[calc(100vh-80px)]">
       <section className="w-full h-[calc(100vh-80px)]">
@@ -457,6 +451,7 @@ export default function PharmacistChatPage({ pharmacistSession }) {
             usedMessages={usedMessages}
             monthlyLimit={monthlyLimit}
             remainingMessages={remainingMessages}
+            addonMessages={addonMessages}
             conversationHistory={conversationHistory}
             conversationId={conversationId}
             onOpenConversation={openConversation}

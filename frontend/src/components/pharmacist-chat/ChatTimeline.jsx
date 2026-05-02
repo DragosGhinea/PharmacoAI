@@ -9,6 +9,7 @@ const AGENT_WORK_SENDERS = new Set([
   ...VISIBLE_ASSISTANT_SENDERS,
   'medication-normalization-agent',
   'medication-evidence-gathering-agent',
+  'medication-answer-synthesis-agent',
   'medication-info-agent',
   'safety-contraindication-agent',
 ]);
@@ -164,9 +165,18 @@ export default function ChatTimeline({
   const hasVisibleMessages = hasVisibleTimelineMessages(conversationMessages);
   const agentWorkAssistantFingerprints = new Set();
   (Array.isArray(agentWorkHistory) ? agentWorkHistory : []).forEach((entry) => {
-    const assistantItems = Array.isArray(entry?.assistantMessages) ? entry.assistantMessages : [];
+    const assistantItems = Array.isArray(entry?.assistant_messages)
+      ? entry.assistant_messages
+      : Array.isArray(entry?.assistantMessages)
+        ? entry.assistantMessages
+        : [];
     assistantItems.forEach((message) => {
       const sender = String(message?.sender || 'assistant');
+      // Final-stage senders render as the main answer bubble outside the work box,
+      // so don't add them to the dedup set — otherwise they'd be hidden from the timeline.
+      if (VISIBLE_ASSISTANT_SENDERS.has(sender)) {
+        return;
+      }
       const content = normalizeFingerprintText(message?.content || '');
       if (content) {
         agentWorkAssistantFingerprints.add(`${sender}|${content}`);
@@ -229,9 +239,8 @@ export default function ChatTimeline({
         (() => {
           if (isSending && chatTurns.length > 0) {
             const liveTimeline = [];
-            const seenDrafts = new Set();
-            const existingDrafts = new Set();
 
+            // Render past visible bubbles from prior turns (unchanged history).
             conversationMessages.forEach((message, index, arr) => {
               const normalizedMessage = normalizeMessageRole(message);
               if (!shouldDisplayAssistantMessage(normalizedMessage, index, arr)) {
@@ -240,29 +249,62 @@ export default function ChatTimeline({
               if (normalizedMessage.role === 'assistant') {
                 const sender = String(normalizedMessage.sender || 'assistant');
                 const content = normalizeFingerprintText(normalizedMessage.content || '');
-                if (content) {
-                  if (agentWorkAssistantFingerprints.has(`${sender}|${content}`)) {
-                    return;
-                  }
-                  existingDrafts.add(`${sender}|${content}`);
+                if (content && agentWorkAssistantFingerprints.has(`${sender}|${content}`)) {
+                  return;
                 }
               }
               liveTimeline.push(renderMessageBubble(normalizedMessage, `${message.timestamp || index}-${index}`));
             });
 
+            // Build the live agent-work block: interleave each McpTurnCard with its draft text
+            // (when produced by an intermediate stage). Visible-sender drafts (final answer)
+            // render OUTSIDE the work box so the user sees the answer prominently.
+            const workItems = [];
+            const visibleDrafts = [];
+            const seenWorkDrafts = new Set();
+            const seenVisibleDrafts = new Set();
+
             chatTurns.forEach((turn, turnIndex) => {
-              liveTimeline.push(<McpTurnCard key={`live-turn-${turnIndex}`} turn={turn} turnIndex={turnIndex} />);
+              workItems.push(
+                <McpTurnCard key={`live-turn-${turnIndex}`} turn={turn} turnIndex={turnIndex} />
+              );
               const draft = turnPreviewText(turn);
-              const draftFingerprint = `${turn.agent_id || 'agent'}|${normalizeFingerprintText(draft)}`;
-              if (!draft || seenDrafts.has(draftFingerprint) || existingDrafts.has(draftFingerprint)) {
+              if (!draft) {
                 return;
               }
-              seenDrafts.add(draftFingerprint);
-              const draftNode = renderLiveTurnDraft(turn, `live-${turnIndex}`);
+              const sender = String(turn?.agent_id || 'agent');
+              const fingerprint = `${sender}|${normalizeFingerprintText(draft)}`;
+
+              if (VISIBLE_ASSISTANT_SENDERS.has(sender)) {
+                if (seenVisibleDrafts.has(fingerprint)) {
+                  return;
+                }
+                seenVisibleDrafts.add(fingerprint);
+                const draftNode = renderLiveTurnDraft(turn, `live-visible-${turnIndex}`);
+                if (draftNode) {
+                  visibleDrafts.push(draftNode);
+                }
+                return;
+              }
+
+              if (seenWorkDrafts.has(fingerprint)) {
+                return;
+              }
+              seenWorkDrafts.add(fingerprint);
+              const draftNode = renderLiveTurnDraft(turn, `live-work-${turnIndex}`);
               if (draftNode) {
-                liveTimeline.push(draftNode);
+                workItems.push(draftNode);
               }
             });
+
+            if (workItems.length > 0) {
+              liveTimeline.push(
+                <AgentWorkBox key="live-agent-work" compactMode={compactMode}>
+                  {workItems}
+                </AgentWorkBox>
+              );
+            }
+            visibleDrafts.forEach((node) => liveTimeline.push(node));
 
             return liveTimeline;
           }
@@ -305,7 +347,8 @@ export default function ChatTimeline({
             if (!entry || !Array.isArray(entry.turns) || entry.turns.length === 0) {
               return;
             }
-            const startIndex = Number(entry.assistantBaseIndex || 0);
+            const rawBaseIndex = entry.assistant_base_index ?? entry.assistantBaseIndex ?? 0;
+            const startIndex = Number(rawBaseIndex) || 0;
             const endIndex = Math.max(startIndex + entry.turns.length - 1, 0);
             const primaryIndex = assistantIndexMap[startIndex];
             const fallbackIndex = assistantIndexMap[endIndex];
@@ -314,19 +357,47 @@ export default function ChatTimeline({
               messageIndex = lastAssistantIndex;
             }
             const items = [];
-            const turnCards = entry.turns.map((turn, turnIndex) => (
-              <McpTurnCard key={`hist-turn-${idx}-${turnIndex}`} turn={turn} turnIndex={turnIndex} />
-            ));
-            items.push(...turnCards);
-            const assistantItems = Array.isArray(entry.assistantMessages) ? entry.assistantMessages : [];
-            assistantItems.forEach((message, msgIndex) => {
+            const assistantItems = Array.isArray(entry.assistant_messages)
+              ? entry.assistant_messages
+              : Array.isArray(entry.assistantMessages)
+                ? entry.assistantMessages
+                : [];
+            // Interleave each McpTurnCard with the assistant message it produced so the work
+            // log reflects the actual processing order: stage card -> stage output -> next stage.
+            entry.turns.forEach((turn, turnIndex) => {
+              items.push(
+                <McpTurnCard key={`hist-turn-${idx}-${turnIndex}`} turn={turn} turnIndex={turnIndex} />
+              );
+              const matchingMessage = assistantItems[turnIndex];
+              if (!matchingMessage) {
+                return;
+              }
+              const sender = String(matchingMessage?.sender || '').trim();
+              // Final-stage messages render as the main answer outside the work box.
+              if (VISIBLE_ASSISTANT_SENDERS.has(sender)) {
+                return;
+              }
               items.push(
                 renderMessageBubble(
-                  normalizeMessageRole(message),
-                  `hist-msg-${idx}-${msgIndex}-${message.timestamp || msgIndex}`
+                  normalizeMessageRole(matchingMessage),
+                  `hist-msg-${idx}-${turnIndex}-${matchingMessage.timestamp || turnIndex}`
                 )
               );
             });
+            // Safety: any extra messages without a paired turn (shouldn't normally happen).
+            for (let extraIdx = entry.turns.length; extraIdx < assistantItems.length; extraIdx += 1) {
+              const message = assistantItems[extraIdx];
+              const sender = String(message?.sender || '').trim();
+              if (VISIBLE_ASSISTANT_SENDERS.has(sender)) {
+                continue;
+              }
+              items.push(
+                renderMessageBubble(
+                  normalizeMessageRole(message),
+                  `hist-msg-${idx}-extra-${extraIdx}-${message.timestamp || extraIdx}`
+                )
+              );
+            }
             const block = (
               <AgentWorkBox key={`agent-work-${idx}`} compactMode={compactMode}>
                 {items}

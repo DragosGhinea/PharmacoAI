@@ -22,8 +22,11 @@ class UserBase(BaseModel):
     is_active: bool = True
 
 
-class UserCreate(UserBase):
+class UserCreate(BaseModel):
+    email: str = Field(min_length=5, max_length=254)
+    full_name: str = Field(min_length=2, max_length=120)
     password: str = Field(min_length=6, max_length=128)
+    is_active: bool = True
 
 
 class UserUpdate(BaseModel):
@@ -40,7 +43,9 @@ class UserUpdate(BaseModel):
 class UserRecord(UserBase):
     id: str
     password: str = ""
+    owner_admin_id: str | None = None
     monthly_messages_used: int = 0
+    addon_messages: int = 0
     created_at: datetime
     updated_at: datetime
 
@@ -52,8 +57,10 @@ class UserResponse(BaseModel):
     role: Role
     tier: Tier
     is_active: bool
+    owner_admin_id: str | None = None
     monthly_messages_used: int
     monthly_message_limit: int
+    addon_messages: int
     allowed_agents: list[str]
     created_at: datetime
     updated_at: datetime
@@ -63,6 +70,9 @@ class TierInfo(BaseModel):
     tier: Tier
     monthly_message_limit: int
     allowed_agents: list[str]
+    admin_user_limit: int
+    supports_message_addons: bool
+    monthly_price_cents: int
 
 
 class MessageSimulationRequest(BaseModel):
@@ -99,6 +109,7 @@ class AuthLoginResponse(BaseModel):
     role: Role
     tier: Tier
     is_active: bool
+    owner_admin_id: str | None = None
 
 
 class ChangePasswordRequest(BaseModel):
@@ -107,6 +118,24 @@ class ChangePasswordRequest(BaseModel):
 
 
 class ChangePasswordResponse(BaseModel):
+    detail: str
+
+
+class SubscriptionCheckoutRequest(BaseModel):
+    tier: Tier
+
+
+class SubscriptionCheckoutResponse(BaseModel):
+    subscription_id: str
+    checkout_session_id: str
+    checkout_url: str
+
+
+class SubscriptionConfirmRequest(BaseModel):
+    session_id: str = Field(min_length=1, max_length=256)
+
+
+class SubscriptionConfirmResponse(BaseModel):
     detail: str
 
 
@@ -119,12 +148,28 @@ def to_user_response(user: UserRecord) -> UserResponse:
         role=user.role,
         tier=user.tier,
         is_active=user.is_active,
+        owner_admin_id=user.owner_admin_id,
         monthly_messages_used=user.monthly_messages_used,
         monthly_message_limit=tier_features["monthly_message_limit"],
+        addon_messages=user.addon_messages,
         allowed_agents=tier_features["allowed_agents"],
         created_at=user.created_at,
         updated_at=user.updated_at,
     )
+
+
+class MessageAddonCheckoutRequest(BaseModel):
+    pack_id: str = Field(min_length=1, max_length=10)
+
+
+class MessageAddonConfirmRequest(BaseModel):
+    session_id: str = Field(min_length=1, max_length=256)
+
+
+class MessageAddonConfirmResponse(BaseModel):
+    detail: str
+    count: int
+    pack_id: str
 
 
 def utcnow() -> datetime:

@@ -3,7 +3,6 @@ const PHARMACIST_CHAT_HISTORY_KEY_PREFIX = 'pharmacoai_pharmacist_chat_history_'
 export const VISIBLE_ASSISTANT_SENDERS = new Set([
   'pharmacist-general-agent',
   'layman-translator-agent',
-  'medication-answer-synthesis-agent',
   'orchestrator-agent',
 ]);
 
