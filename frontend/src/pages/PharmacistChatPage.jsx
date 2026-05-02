@@ -15,6 +15,7 @@ import {
   hasVisibleTimelineMessages,
   persistPharmacistChatHistory,
   readPharmacistChatHistory,
+  shouldDisplayAssistantMessage,
   upsertConversationHistoryEntry,
 } from '../utils/pharmacistChatUtils';
 
@@ -185,7 +186,9 @@ export default function PharmacistChatPage({ pharmacistSession }) {
     setError('');
     setMessageInfo('');
     setChatTurns([]);
-    const assistantBaseIndexSnapshot = conversationMessages.filter((item) => item?.role === 'assistant').length;
+    const assistantBaseIndexSnapshot = conversationMessages.filter(
+      (item, idx, arr) => item?.role === 'assistant' && shouldDisplayAssistantMessage(item, idx, arr)
+    ).length;
     setActiveAssistantBaseIndex(assistantBaseIndexSnapshot);
 
     if (optimisticUserMessage) {
@@ -232,29 +235,6 @@ export default function PharmacistChatPage({ pharmacistSession }) {
           }
           if (event?.type === 'step_completed') {
             upsertStreamedStep(event, 'completed');
-            const stageOutput = String(event?.stage_output || '').trim();
-            const stageAgent = String(event?.agent_id || 'agent');
-            if (stageOutput) {
-              const provisionalTimestamp = new Date().toISOString();
-              setConversationMessages((current) => {
-                const fingerprint = `${stageAgent}|${stageOutput}`;
-                const alreadyPresent = current.some(
-                  (item) => item?.role === 'assistant' && `${String(item?.sender || 'assistant')}|${String(item?.content || '').trim()}` === fingerprint
-                );
-                if (alreadyPresent) {
-                  return current;
-                }
-                return [
-                  ...current,
-                  {
-                    role: 'assistant',
-                    sender: stageAgent,
-                    content: stageOutput,
-                    timestamp: provisionalTimestamp,
-                  },
-                ];
-              });
-            }
           }
         },
         {
@@ -386,7 +366,6 @@ export default function PharmacistChatPage({ pharmacistSession }) {
       setAgentWorkHistory(response.agent_work_history || []);
       setActiveAssistantBaseIndex(0);
       setChatTurns([]);
-      setAgentWorkHistory([]);
       setMessageInfo(`Conversation ID: ${targetConversationId}`);
     } catch (openError) {
       if (openError instanceof Error) {
