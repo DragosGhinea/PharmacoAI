@@ -1,0 +1,33 @@
+\section{Produsul și utilizatorii}
+
+\subsection{Descrierea produsului}
+PharmacoAI este construit pe un sistem de agenți specializați: un \textbf{agent general} primește mesajul clientului (scris sau citit automat), decide dacă întrebarea poate fi răspunsă imediat sau dacă necesită un ,,flux de analiză medicală'' și, în cazul complex, lansează o secvență de pași specializați:
+
+\begin{itemize}
+    \item \textbf{Agent de normalizare a medicației}: corectează denumirea greșită, identifică ingredientul activ și găsește analoge/similare în alte țări.
+    \item \textbf{Agent de \textit{facts}}: consultă mai multe baze de date pentru informații despre indicații, contraindicații, efecte adverse și interacțiuni.
+    \item \textbf{Agent de sinteză}: rezumă datele într-un răspuns clar, profesional, pentru farmacist.
+    \item \textbf{Agent de traducere pentru pacient}: transformă răspunsul profesional într-un text pe înțelesul unui utilizator obișnuit, fără jargon medical.
+\end{itemize}
+
+În esență, PharmacoAI oferă un serviciu de asistență agențială pentru farmacii care transformă o întrebare liberă a clientului într-un răspuns verificat, sintetizat și adaptat la nivelul de cunoștințe al interlocutorului, într-un singur flux integrat în operațiunea zilnică a farmaciei.
+
+\subsection{Utilizatori-țintă și \textit{user stories}}
+
+\paragraph{Farmacist (utilizator principal).}
+\begin{itemize}
+    \item Vreau să pot citi rapid informații corecte despre un medicament nou sau rar, fără să navighez între mai multe resurse externe, astfel încât să răspund clientului în mai puțin de 30 de secunde.
+    \item Vreau ca sistemul să îmi spună automat dacă două medicamente pot fi luate împreună și care sunt riscurile majore, pentru a evita prescripții periculoase.
+    \item Vreau să pot introduce numele unui medicament scris greșit sau incomplet și să primesc automat denumirea corectă și ingredientul activ, astfel încât să nu risc confuzii la vânzare.
+    \item Vreau să pot oferi pacientului un răspuns clar și simplu, generat de sistem, în loc să compun singur explicații în fiecare caz, pentru a economisi timp și a reduce riscul de erori.
+\end{itemize}
+
+\paragraph{Administrator de lanț de farmacii.}
+\begin{itemize}
+    \item Vreau să pot gestiona un cont central pentru mai mulți utilizatori, astfel încât să mențin sub control organizarea internă.
+\end{itemize}
+
+\paragraph{Pacient (utilizator final).}
+\begin{itemize}
+    \item Vreau să primesc răspunsuri clare, înțelese de oricine, la întrebări simple despre medicamente, dozaj sau interacțiuni, fără a fi nevoit să citesc texte tehnice sau complicate.
+\end{itemize}

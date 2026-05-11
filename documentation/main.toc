@@ -1,0 +1,42 @@
+\babel@toc {romanian}{}\relax 
+\contentsline {section}{\numberline {1}Rezumat executiv}{2}{section.1}%
+\contentsline {section}{\numberline {2}Produsul și utilizatorii}{3}{section.2}%
+\contentsline {subsection}{\numberline {2.1}Descrierea produsului}{3}{subsection.2.1}%
+\contentsline {subsection}{\numberline {2.2}Utilizatori-țintă și \textit {user stories}}{3}{subsection.2.2}%
+\contentsline {paragraph}{Farmacist (utilizator principal).}{3}{section*.6}%
+\contentsline {paragraph}{Administrator de lanț de farmacii.}{3}{section*.7}%
+\contentsline {paragraph}{Pacient (utilizator final).}{3}{section*.8}%
+\contentsline {section}{\numberline {3}Stiva tehnologică}{4}{section.3}%
+\contentsline {section}{\numberline {4}Analiza SWOT}{5}{section.4}%
+\contentsline {subsection}{\numberline {4.1}Puncte tari (\textit {Strengths})}{5}{subsection.4.1}%
+\contentsline {subsection}{\numberline {4.2}Puncte slabe (\textit {Weaknesses})}{5}{subsection.4.2}%
+\contentsline {subsection}{\numberline {4.3}Oportunități (\textit {Opportunities})}{5}{subsection.4.3}%
+\contentsline {subsection}{\numberline {4.4}Amenințări (\textit {Threats})}{5}{subsection.4.4}%
+\contentsline {section}{\numberline {5}Analiza de piață}{6}{section.5}%
+\contentsline {subsection}{\numberline {5.1}Principalii competitori}{6}{subsection.5.1}%
+\contentsline {paragraph}{Sully.ai.}{6}{section*.9}%
+\contentsline {paragraph}{Pharmie AI.}{6}{section*.10}%
+\contentsline {paragraph}{Asepha.ai.}{6}{section*.11}%
+\contentsline {paragraph}{Pharmesol.}{6}{section*.12}%
+\contentsline {paragraph}{PharmacyAI.}{6}{section*.13}%
+\contentsline {subsection}{\numberline {5.2}Matricea de funcționalități}{6}{subsection.5.2}%
+\contentsline {subsection}{\numberline {5.3}Avantaje competitive}{6}{subsection.5.3}%
+\contentsline {subsection}{\numberline {5.4}Dezavantaje competitive}{7}{subsection.5.4}%
+\contentsline {subsection}{\numberline {5.5}Diferențiator-cheie}{7}{subsection.5.5}%
+\contentsline {section}{\numberline {6}Analiza riscurilor}{8}{section.6}%
+\contentsline {subsection}{\numberline {6.1}Dozaj incorect și halucinații ale AI (\textit {Liability Risk})}{8}{subsection.6.1}%
+\contentsline {subsection}{\numberline {6.2}Adoptare scăzută în rândul farmaciștilor (\textit {Adoption Barrier})}{8}{subsection.6.2}%
+\contentsline {subsection}{\numberline {6.3}Reglementări stricte și schimbătoare}{8}{subsection.6.3}%
+\contentsline {subsection}{\numberline {6.4}Dependența de date și întârzieri în actualizări}{9}{subsection.6.4}%
+\contentsline {subsection}{\numberline {6.5}Concurența companiilor Big Pharma}{9}{subsection.6.5}%
+\contentsline {section}{\numberline {7}Planificare}{10}{section.7}%
+\contentsline {subsection}{\numberline {7.1}Echipa}{10}{subsection.7.1}%
+\contentsline {subsection}{\numberline {7.2}Diagrama Gantt}{10}{subsection.7.2}%
+\contentsline {section}{\numberline {8}Analiza costurilor și modelul de business}{11}{section.8}%
+\contentsline {subsection}{\numberline {8.1}Analiza costurilor API (Generative AI)}{11}{subsection.8.1}%
+\contentsline {subsection}{\numberline {8.2}Costuri estimate}{12}{subsection.8.2}%
+\contentsline {subsection}{\numberline {8.3}Modelul de business și estimări de venit}{12}{subsection.8.3}%
+\contentsline {subsection}{\numberline {8.4}Analiză cost / beneficiu}{13}{subsection.8.4}%
+\contentsline {section}{\numberline {9}Lean Canvas (1-page summary)}{13}{section.9}%
+\contentsline {section}{\numberline {10}Concluzii}{13}{section.10}%
+\contentsline {section}{Anexă: utilizarea uneltelor AI}{14}{section*.14}%

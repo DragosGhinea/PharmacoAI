@@ -1,0 +1,12 @@
+\section*{Anexă: utilizarea uneltelor AI}
+\addcontentsline{toc}{section}{Anexă: utilizarea uneltelor AI}
+
+În realizarea acestui proiect am folosit pe scară largă unelte de tip \textit{generative AI} (modele Anthropic Claude, Google Gemini, OpenAI), atât pentru cod, cât și pentru documentație. În spiritul transparenței cerute de cursul MPA, declarăm explicit modul de utilizare:
+
+\begin{itemize}
+    \item \textbf{Aplicația este \textit{vibe-coded}.} Scheletul de cod (frontend React, backend FastAPI, integrare Stripe, persistență, fluxuri de autentificare) a fost generat și iterat prin sesiuni conversaționale cu asistenți AI, conform recomandării din cerințele cursului (,,vibe-codat cât mai mult posibil'').
+    \item \textbf{Agenții sunt, de asemenea, \textit{vibe-coded}.} Definițiile agenților (\textit{system prompts}, parametrii de model, temperatura, niveluri de risc, \textit{tool wiring} către serverul MCP) și pipeline-ul de orchestrare (triere $\rightarrow$ normalizare $\rightarrow$ \textit{facts} $\rightarrow$ sinteză $\rightarrow$ traducere) au fost concepute și rafinate iterativ împreună cu modelele AI.
+    \item \textbf{Documentația de față a fost revizuită cu AI.} Conținutul acestui document (rezumat executiv, SWOT, analiza de piață, riscuri, costuri, Lean Canvas, concluzii) a fost \textbf{scris de membrii echipei}, iar revizuirea, restructurarea, traducerea și formatarea LaTeX au fost realizate cu asistența unui model AI.
+    \item \textbf{Codul a trecut prin multe iterații de intervenție umană.} Deși punctul de plecare al fiecărei componente a fost generat AI, forma finală reflectă numeroase iterații de revizuire, depanare, refactorizare și validare manuală efectuate de echipă; fără acest strat de intervenție umană, codul nu ar fi atins stadiul actual de funcționalitate, securitate și coerență arhitecturală.
+\end{itemize}
+

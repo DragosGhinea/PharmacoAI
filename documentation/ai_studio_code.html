@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+    <meta charset="UTF-8">
+    <title>Lean Canvas - PharmacoAI</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f7f6; padding: 20px; color: #333; }
+        .canvas-container { max-width: 1200px; margin: 0 auto; background: #fff; padding: 20px; border-radius: 10px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+        .header { text-align: center; margin-bottom: 20px; color: #0056b3; }
+        .grid-top { display: grid; grid-template-columns: repeat(5, 1fr); grid-auto-rows: minmax(150px, auto); gap: 10px; margin-bottom: 10px; }
+        .grid-bottom { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
+        .box { border: 1px solid #cce3e6; padding: 15px; border-radius: 6px; background-color: #fafdfd; display: flex; flex-direction: column; }
+        .box-title { font-weight: bold; font-size: 14px; text-transform: uppercase; color: #007b8f; margin-bottom: 10px; border-bottom: 2px solid #e1f0f2; padding-bottom: 5px; }
+        .box-content { font-size: 13px; line-height: 1.5; }
+        ul { margin: 0; padding-left: 20px; margin-bottom: 10px; }
+        .highlight { font-weight: bold; color: #0056b3; }
+        /* Grid placements for top section */
+        .problem { grid-column: 1; grid-row: 1 / 3; }
+        .solution { grid-column: 2; grid-row: 1; }
+        .metrics { grid-column: 2; grid-row: 2; }
+        .uvp { grid-column: 3; grid-row: 1 / 3; background-color: #f0f8ff; border-color: #b3d4ff; }
+        .advantage { grid-column: 4; grid-row: 1; }
+        .channels { grid-column: 4; grid-row: 2; }
+        .segments { grid-column: 5; grid-row: 1 / 3; }
+        /* Footer text */
+        .footer { display: flex; justify-content: space-between; font-size: 12px; color: #777; margin-top: 15px; font-style: italic; font-weight: bold;}
+    </style>
+</head>
+<body>
+
+<div class="canvas-container">
+    <h1 class="header">Lean Canvas - PharmacoAI</h1>
+
+    <div class="grid-top">
+        <!-- Col 1 -->
+        <div class="box problem">
+            <div class="box-title">1. Problemă</div>
+            <div class="box-content">
+                <span class="highlight">Top 3 probleme:</span>
+                <ul>
+                    <li>Timp limitat</li>
+                    <li>Risc de erori</li>
+                    <li>Jargon medical greoi</li>
+                </ul>
+                <span class="highlight">Competitori:</span>
+                <ul>
+                    <li>Sully.ai (orientat spitale/EHR)</li>
+                    <li>Pharmie AI (call automation)</li>
+                    <li>Asepha.ai (OCR rețete)</li>
+                    <li>Pharmesol (workflow farmacie)</li>
+                    <li>PharmacyAI (asistent mobil personal)</li>
+                </ul>
+            </div>
+        </div>
+
+        <!-- Col 2 -->
+        <div class="box solution">
+            <div class="box-title">4. Soluție</div>
+            <div class="box-content">
+                <span class="highlight">Top 3 features:</span>
+                <ul>
+                    <li>Sistem Multi-agent</li>
+                    <li>Normalizare date</li>
+                    <li>Răspuns dual (farmacist/pacient)</li>
+                </ul>
+            </div>
+        </div>
+        <div class="box metrics">
+            <div class="box-title">8. Indicatori Cheie</div>
+            <div class="box-content">
+                <ul>
+                    <li>MRR / Churn rate</li>
+                    <li>Retenție la 90 de zile</li>
+                    <li>Mesaje per farmacie</li>
+                    <li>Timp mediu per răspuns</li>
+                </ul>
+            </div>
+        </div>
+
+        <!-- Col 3 -->
+        <div class="box uvp">
+            <div class="box-title">3. Unique Value Proposition</div>
+            <div class="box-content" style="text-align: center; margin-top: 10px;">
+                <h3 style="color: #0056b3; margin: 0 0 10px 0;">„Co-pilot pentru farmacist”</h3>
+                <p style="font-size: 14px; background: #e6f2ff; padding: 10px; border-radius: 5px; margin: 0 0 8px 0;">
+                    Răspuns medical verificat în <strong>&lt; 30 secunde</strong>, adaptat simultan pentru farmacist și pacient.
+                </p>
+                <p style="font-size: 13px; background: #e6f2ff; padding: 8px; border-radius: 5px; margin: 0 0 8px 0;">
+                    Corectare automată a denumirilor și identificare a ingredientului activ.
+                </p>
+                <p style="font-size: 13px; background: #e6f2ff; padding: 8px; border-radius: 5px; margin: 0 0 8px 0;">
+                    Verificare instantanee a interacțiunilor și contraindicațiilor.
+                </p>
+                <p style="font-size: 13px; background: #e6f2ff; padding: 8px; border-radius: 5px; margin: 0;">
+                    Comparare directă a două medicamente, cu echivalente locale și internaționale.
+                </p>
+            </div>
+        </div>
+
+        <!-- Col 4 -->
+        <div class="box advantage">
+            <div class="box-title">9. Avantaj Nedrept</div>
+            <div class="box-content">
+                <span class="highlight">Greu de copiat:</span>
+                <ul>
+                    <li>Singura platformă care găsește echivalentele unui medicament în alte țări</li>
+                    <li>Istoric complet al fiecărui răspuns AI, pentru responsabilitate legală</li>
+                    <li>Un singur cont răspunde simultan farmacistului (limbaj profesional) și pacientului (limbaj simplificat)</li>
+                </ul>
+            </div>
+        </div>
+        <div class="box channels">
+            <div class="box-title">5. Canale</div>
+            <div class="box-content">
+                <ul>
+                    <li>Vânzare directă (B2B)</li>
+                    <li>Asociații de farmaciști</li>
+                    <li>Integrări ERP / PMS</li>
+                    <li>SEO & Inbound Marketing</li>
+                </ul>
+            </div>
+        </div>
+
+        <!-- Col 5 -->
+        <div class="box segments">
+            <div class="box-title">2. Segmente de Clienți</div>
+            <div class="box-content">
+                <span class="highlight">Target principal:</span>
+                <ul>
+                    <li>Farmacii independente</li>
+                    <li>Lanțuri mici și medii</li>
+                    <li>Zone cu turism medical</li>
+                </ul>
+                <span class="highlight">Early adopters:</span>
+                <ul>
+                    <li>Farmacii cu volum &gt;200 clienți/zi</li>
+                    <li>Lanțuri independente cu 2-5 puncte de lucru</li>
+                    <li>Farmacii din orașe universitare</li>
+                    <li>Farmaciști sub 35 de ani, expuși deja la tooluri digitale</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <div class="grid-bottom">
+        <!-- Bottom Left -->
+        <div class="box">
+            <div class="box-title">7. Structura Costurilor</div>
+            <div class="box-content">
+                <ul style="column-count: 2;">
+                    <li>Salarii fondatori (3 pers.)</li>
+                    <li>API LLM (Gemini Flash)</li>
+                    <li>Cloud hosting & servere</li>
+                    <li>Marketing B2B</li>
+                    <li>Legal & compliance (GDPR/Medical)</li>
+                </ul>
+                <p style="margin-top: 10px; border-top: 1px solid #ccc; padding-top: 5px;"><strong>Estimare Anul 1:</strong> ~63.600 €</p>
+            </div>
+        </div>
+
+        <!-- Bottom Right -->
+        <div class="box">
+            <div class="box-title">6. Fluxuri de Venit</div>
+            <div class="box-content">
+                <ul style="column-count: 2;">
+                    <li><strong>Starter:</strong> 10 $/lună (150 mesaje)</li>
+                    <li><strong>Pro:</strong> 99 $/lună (3.000 mesaje, marjă >95%)</li>
+                    <li><strong>Ultimate:</strong> 299 $/lună (20.000 mesaje, multi-user)</li>
+                    <li>Pachete <em>pay-as-you-go</em> (top-up)</li>
+                </ul>
+                <p style="margin-top: 10px; border-top: 1px solid #ccc; padding-top: 5px;"><strong>Target Anul 3:</strong> ~180.000 €</p>
+            </div>
+        </div>
+    </div>
+
+    <div class="footer">
+        <div>&larr; PRODUS</div>
+        <div>PIAȚĂ &rarr;</div>
+    </div>
+</div>
+
+</body>
+</html>
