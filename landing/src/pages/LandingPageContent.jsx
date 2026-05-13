@@ -1,4 +1,46 @@
+const SUBSCRIPTION_PLANS = [
+  {
+    tier: 'free',
+    name: 'Starter',
+    priceLabel: '$10',
+    cadence: '/month',
+    tagline: 'For solo pharmacies getting started',
+    userLimit: '1 admin user',
+    messageLimit: '150 messages/month',
+    agents: ['Drug Explainer', 'Ingredient Analyst', 'Summary Agent'],
+    cardClass: 'bg-white border-slate-200',
+    buttonClass: 'bg-slate-900 text-white hover:bg-slate-700',
+  },
+  {
+    tier: 'pro',
+    name: 'Pro',
+    priceLabel: '$99',
+    cadence: '/month',
+    tagline: 'For pharmacies scaling clinical throughput',
+    userLimit: 'Up to 8 users',
+    messageLimit: '3,000 messages/month',
+    agents: ['Drug Explainer', 'Ingredient Analyst', 'Summary Agent'],
+    cardClass: 'bg-emerald-50 border-emerald-300',
+    buttonClass: 'bg-emerald-700 text-white hover:bg-emerald-600',
+  },
+  {
+    tier: 'ultimate',
+    name: 'Ultimate',
+    priceLabel: '$299',
+    cadence: '/month',
+    tagline: 'For enterprise pharmacies with large teams',
+    userLimit: 'Up to 50 users',
+    messageLimit: '20,000 messages/month',
+    agents: ['Drug Explainer', 'Ingredient Analyst', 'Summary Agent'],
+    cardClass: 'bg-amber-50 border-amber-300',
+    buttonClass: 'bg-amber-700 text-white hover:bg-amber-600',
+  },
+];
+
 export default function LandingPageContent() {
+  const checkoutStatus =
+    typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('checkout') : null;
+
   return (
     <main>
       <section className="relative pt-24 pb-32 px-8 overflow-hidden">
@@ -185,21 +227,49 @@ export default function LandingPageContent() {
       </section>
 
       <section className="py-20 px-8">
-        <div className="max-w-5xl mx-auto bg-primary-container rounded-[2.5rem] p-12 md:p-20 text-center relative overflow-hidden">
+        <div className="max-w-7xl mx-auto bg-primary-container rounded-[2.5rem] p-8 md:p-14 relative overflow-hidden">
           <div className="relative z-10">
-            <h2 className="text-4xl md:text-5xl font-bold text-white mb-6">Ready to upgrade your pharmacy&apos;s intelligence?</h2>
-            <p className="text-on-primary-container text-lg mb-10 max-w-2xl mx-auto">
-              Join the 500+ clinical institutions leveraging PharmacoAI to drive better patient outcomes through automation.
+            <h2 className="text-4xl md:text-5xl font-bold text-white mb-4">Ready to upgrade your pharmacy&apos;s intelligence?</h2>
+            <p className="text-on-primary-container text-lg mb-10 max-w-3xl">
+              Choose a plan and provide your billing details. You will be redirected to Stripe checkout.
             </p>
-            <div className="flex flex-col sm:flex-row gap-4 justify-center">
-              <button className="bg-secondary text-white px-10 py-4 rounded-2xl font-bold text-lg hover:bg-on-secondary-container transition-colors shadow-lg shadow-secondary/20" type="button">
-                Request Demo
-              </button>
-              <button className="bg-white/10 text-white backdrop-blur-md px-10 py-4 rounded-2xl font-bold text-lg hover:bg-white/20 transition-colors" type="button">
-                Contact Sales
-              </button>
+
+            {checkoutStatus === 'success' && (
+              <p className="mb-6 rounded-xl bg-emerald-500/20 border border-emerald-300/40 text-white px-4 py-3 text-sm font-semibold">
+                Subscription flow completed successfully.
+              </p>
+            )}
+
+            <div className="grid md:grid-cols-3 gap-5 mb-6">
+              {SUBSCRIPTION_PLANS.map((plan) => (
+                <article key={plan.tier} className={`rounded-3xl border p-6 shadow-sm ${plan.cardClass}`}>
+                  <p className="text-[11px] uppercase tracking-[0.2em] text-slate-700 font-bold">{plan.name}</p>
+                  <p className="text-4xl text-slate-900 font-bold mt-3">
+                    {plan.priceLabel}
+                    <span className="text-sm text-slate-600">{plan.cadence}</span>
+                  </p>
+                  <p className="text-sm text-slate-700 mt-3 mb-4">{plan.tagline}</p>
+                  <ul className="space-y-2 mb-6">
+                    <li className="text-sm text-slate-700">{plan.userLimit}</li>
+                    <li className="text-sm text-slate-700">{plan.messageLimit}</li>
+                    <li className="text-sm text-slate-700">{plan.agents.length} included agent(s)</li>
+                  </ul>
+                  <button
+                    className={`w-full rounded-xl py-2.5 text-sm font-bold transition-colors ${plan.buttonClass}`}
+                    type="button"
+                  >
+                    Choose {plan.name}
+                  </button>
+                </article>
+              ))}
             </div>
+
+            <p className="text-sm text-on-primary-container mb-1">
+              Every user can buy a custom number of extra messages at any time, regardless of subscription plan.
+            </p>
+            <p className="text-xs text-on-primary-container/80">Top-ups are handled as add-ons to your active subscription.</p>
           </div>
+
           <div className="absolute inset-0 -z-0 opacity-10">
             <div className="absolute top-0 left-0 w-64 h-64 bg-secondary rounded-full blur-[100px]"></div>
             <div className="absolute bottom-0 right-0 w-64 h-64 bg-primary-fixed rounded-full blur-[100px]"></div>
