@@ -1,0 +1,70 @@
+\section{Planificare}
+
+\subsection{Echipa}
+
+Echipa ipotetică a startup-ului este formată din \textbf{3 fondatori-tehnici}, fiecare cu un domeniu de responsabilitate distinct, plus o linie comună de \textit{R\&D} pentru direcțiile viitoare:
+
+\begin{itemize}
+    \item \textbf{Cucu Raul-Mihai} --- \textit{Frontend \& Account Management}: landing page, structuri de conturi și roluri, securitate, acces preferențial la agenți.
+    \item \textbf{Ghinea Dragoș-Dumitru} --- \textit{Agenți AI \& MCP}: \textit{tooling} MCP, agenții specializați (general, normalizare, \textit{facts}, sinteză, traducere pentru pacient) și orchestrarea fluxului \textit{agentic}.
+    \item \textbf{Ghergu Ioana-Laura} --- \textit{Billing \& Tiers}: sistem de taxare B2B, planuri \textit{Basic / Pro / Max / Enterprise}, mesaje extra (\textit{pay-as-you-go}), integrare Stripe, \textit{upgrade}-uri și administrare la nivel de organizație.
+\end{itemize}
+
+\subsection{Diagrama Gantt}
+
+Calendarul livrabilelor pentru perioada \textbf{20 aprilie -- 15 mai 2026} este sintetizat în diagrama de mai jos. Direcțiile de \textit{R\&D} sunt planificate ca fază paralelă, după livrarea funcționalităților principale.
+
+\begin{figure}[H]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{ganttchart}[
+    hgrid,
+    vgrid,
+    time slot format=isodate,
+    x unit=0.6cm,
+    y unit chart=0.8cm,
+    title height=1,
+    bar height=0.5,
+    bar/.append style={fill=blue!40},
+    group/.append style={fill=blue!70},
+    milestone/.append style={fill=red}
+]{2026-04-20}{2026-05-15}
+
+\gantttitlecalendar{day} \\
+
+% Raul
+\ganttgroup{Cucu Raul - Mihai}{2026-04-20}{2026-05-15} \\
+\ganttbar{Landing page research}{2026-04-20}{2026-04-21} \\
+\ganttbar{Landing page implementare}{2026-04-22}{2026-04-24} \\
+\ganttbar{Structura conturi si roluri utilizatori}{2026-04-25}{2026-04-27} \\
+\ganttbar{Setari securitate cont + limite consum}{2026-04-28}{2026-05-01} \\
+\ganttbar{Access preferential la agenti}{2026-05-02}{2026-05-05} \\
+
+% Dragos
+\ganttgroup{Ghinea Dragoș - Dumitru}{2026-04-20}{2026-05-15} \\
+\ganttbar{MCP Tooling}{2026-04-20}{2026-04-21} \\
+\ganttbar{General Assistant Agent}{2026-04-22}{2026-04-23} \\
+\ganttbar{Normalization Medication Agent}{2026-04-24}{2026-04-25} \\
+\ganttbar{Medication Facts Agent}{2026-04-25}{2026-04-26} \\
+\ganttbar{Medication Synthesis Agent}{2026-04-27}{2026-04-28} \\
+\ganttbar{Layman Translation Agent}{2026-04-29}{2026-04-30} \\
+\ganttbar{Agent orchestration}{2026-05-01}{2026-05-05} \\
+
+% Ioana
+\ganttgroup{Ghergu Ioana - Laura}{2026-04-20}{2026-05-15} \\
+\ganttbar{Sistem taxare B2B}{2026-04-20}{2026-04-22} \\
+\ganttbar{Planuri Basic / Pro / Max / Enterprise}{2026-04-23}{2026-04-25} \\
+\ganttbar{Mesaje extra / Pay as you go}{2026-04-26}{2026-04-28} \\
+\ganttbar{Integrare Stripe}{2026-04-29}{2026-04-30} \\
+\ganttbar{Upgrade conturi + admin organization}{2026-05-01}{2026-05-05} \\
+
+% Future work
+\ganttgroup{Direcții viitoare}{2026-04-20}{2026-05-15} \\
+\ganttbar{A/B testing frontend + feedback utilizatori}{2026-05-08}{2026-05-15} \\
+\ganttbar{Extensive R\&D agent flows si modele AI}{2026-05-08}{2026-05-15}
+
+\end{ganttchart}%
+}
+\caption{Diagrama Gantt --- planificarea livrabilelor pe membri și direcții}
+\label{fig:gantt}
+\end{figure}

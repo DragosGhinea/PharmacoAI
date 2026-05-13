@@ -1,0 +1,118 @@
+\section{Analiza costurilor și modelul de business}
+
+\subsection{Analiza costurilor API (Generative AI)}
+
+Folosind un \textit{Agentic Workflow}, fiecare mesaj utilizator implică, în medie, \textbf{5 request-uri} către model (router, căutare, raționament clinic, sinteză, verificare), cu o medie de 1.000 tokeni \textit{input} și 200 tokeni \textit{output} per request.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Model AI} & \textbf{\$ / 1M tok.} & \textbf{\$ / req.} & \textbf{\$ / mesaj} & \textbf{3.000 mesaje} \\
+\midrule
+Gemini 3.1 Pro     & 1{,}25 / 5{,}00   & 0{,}00225  & 0{,}01125 & 33{,}75 \\
+Gemini 3.1 Flash   & 0{,}15 / 0{,}60   & 0{,}00027  & 0{,}00135 &  4{,}05 \\
+Gemini 3.0 Flash   & 0{,}075 / 0{,}30  & 0{,}000135 & 0{,}00067 &  2{,}01 \\
+Gemini Flash Lite  & 0{,}037 / 0{,}15  & 0{,}000067 & 0{,}00033 &  1{,}00 \\
+\bottomrule
+\end{tabular}
+\caption{Compararea costurilor modelelor Gemini (intrare/ieșire, USD)}
+\label{tab:costuri_ai}
+\end{table}
+
+\textbf{Concluzii:} Gemini 3.1 Pro este prea scump pentru toți agenții, dar poate fi păstrat pentru raționamentul clinic final. Gemini 3.1 / 3.0 Flash sunt \textit{sweet spot}-ul pentru \textit{router} și agenții de căutare. La \$2--\$4 cost API pentru un abonament de \$99 marja brută software depășește 95\,\%. Pe termen mediu, costurile pot fi reduse prin modele \textit{open-source} rulate local pe un server GPU dedicat ($\sim$150--250~\$/lună, zeci de mii de inferențe fără cost per request). Pentru început, recomandăm \textbf{Gemini 3.1 Flash}.
+
+\subsection{Costuri estimate}
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{lr}
+\toprule
+\multicolumn{2}{l}{\textbf{Costuri inițiale (MVP, 6 luni)}} \\
+\midrule
+Salarii fondatori (3 $\times$ 1.000~\euro\ $\times$ 6 luni) & 18.000~\euro \\
+Costuri legale și înființare                                 &  1.500~\euro \\
+\textit{Hosting} + API (testare)                             &    500~\euro \\
+\midrule
+\textbf{Total investiție inițială}                           & \textbf{$\sim$20.000~\euro} \\
+\bottomrule
+\end{tabular}
+\hspace{0.5cm}
+\begin{tabular}{lr}
+\toprule
+\multicolumn{2}{l}{\textbf{Costuri operaționale lunare (Anul 1)}} \\
+\midrule
+Salarii fondatori (3 $\times$ 1.500~\euro)  & 4.500~\euro \\
+\textit{Cloud hosting} (Vercel, DB)         &   100~\euro \\
+API AI                                       &   100~\euro \\
+Marketing B2B                                &   400~\euro \\
+Contabilitate și diverse                     &   200~\euro \\
+\midrule
+\textbf{Total lunar / anual}                 & \textbf{5.300 / 63.600~\euro} \\
+\bottomrule
+\end{tabular}
+\caption{Structura costurilor: investiție inițială și costuri operaționale}
+\label{tab:costuri}
+\end{table}
+
+\subsection{Modelul de business și estimări de venit}
+
+Modelul comercial este \textbf{SaaS B2B} (cu opțiune B2B2C prin contul de farmacist). Pachetele și proiecția de venituri pe 3 ani sunt centralizate în Tabelul~\ref{tab:venituri}.
+
+\begin{table}[H]
+\centering
+\small
+\begin{minipage}{0.42\textwidth}
+\centering
+\begin{tabular}{lcc}
+\toprule
+\textbf{Pachet}   & \textbf{\$/lună} & \textbf{Mesaje} \\
+\midrule
+Starter           & 10   & 150 \\
+Pro               & 99   & 3.000 \\
+Ultimate          & 299  & 20.000 \\
+\bottomrule
+\end{tabular}
+\par\smallskip\textit{Pachete de abonament}
+\end{minipage}\hfill
+\begin{minipage}{0.55\textwidth}
+\centering
+\begin{tabular}{lcccr}
+\toprule
+\textbf{An} & \textbf{Starter} & \textbf{Pro} & \textbf{Ultimate} & \textbf{Venit anual} \\
+\midrule
+1 & 20  & 15  &  0 & $\sim$18.000~\euro \\
+2 & 40  & 50  &  2 & $\sim$72.000~\euro \\
+3 & 80  & 120 & 10 & $\sim$180.000~\euro \\
+\bottomrule
+\end{tabular}
+\par\smallskip\textit{Proiecție clienți și venituri}
+\end{minipage}
+\caption{Modelul comercial și estimarea veniturilor pe 3 ani}
+\label{tab:venituri}
+\end{table}
+
+\subsection{Analiză cost / beneficiu}
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{lr}
+\toprule
+\textbf{Indicator} & \textbf{Valoare} \\
+\midrule
+Investiție MVP                          & 20.000~\euro \\
+Pierdere Anul 1                         & $-$45.600~\euro \\
+\textbf{Capital total investit}         & \textbf{65.600~\euro} \\
+\midrule
+Rezultat Anul 1 / 2 / 3                 & $-$45.600 / $+$2.000 / $+$80.000~\euro \\
+\textit{Payback} (după pragul de profit) & $63.600 / 80.000 \approx 0{,}79$ ani \\
+\textbf{Perioadă totală de recuperare}  & \textbf{$\sim$2 ani și 9 luni} \\
+ROI la finalul Anului 3                 & $16.400 / 65.600 \times 100 \approx 25\,\%$ \\
+\bottomrule
+\end{tabular}
+\caption{Indicatori financiari sintetici}
+\label{tab:roi}
+\end{table}

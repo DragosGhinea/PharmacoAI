@@ -1,0 +1,27 @@
+\section{Stiva tehnologică}
+
+PharmacoAI este organizat ca un sistem pe trei niveluri: o aplicație single-page \textbf{React + Vite}, un backend \textbf{FastAPI (Python 3.13)} care expune endpoint-uri REST și de \textit{streaming} (Server-Sent Events), și un server dedicat \textbf{Model Context Protocol (MCP)} care intermediază accesul la unelte pentru agenții AI. Cele trei servicii sunt configurate prin variabile de mediu (\texttt{.env} comun) și sunt pornite local printr-un script PowerShell unificat.
+
+\begin{table}[H]
+\centering
+\small
+\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{p{3.2cm}p{11cm}}
+\toprule
+\textbf{Strat} & \textbf{Tehnologii și responsabilități} \\
+\midrule
+Frontend & React 18, Vite 5, \texttt{react-markdown} (cu GFM): landing page, chat farmacist cu \textit{streaming}, panou admin utilizatori, fluxuri cont și facturare. \\
+Backend API & FastAPI 0.115, Uvicorn (ASGI), Pydantic v2, \texttt{httpx}: autentificare, RBAC (admin / farmacist), \textit{tier}-uri de abonament, persistență, logare structurată, livrare prin SSE cu suport pentru anulare. \\
+Persistență & Repository pe fișiere JSON, interschimbabil cu o bază de date administrată fără modificări de interfață. \\
+Strat AI / Agenți & Multipli agenți \textbf{Google Gemini} (\texttt{gemini-3-flash-preview}) într-un \textit{pipeline} de tip triere $\rightarrow$ normalizare $\rightarrow$ evidențe $\rightarrow$ sinteză, cu \textit{handoff} între agenți; configurare declarativă (prompt, model, temperatură, nivel de risc). \\
+Server MCP & FastMCP (Python SDK MCP), transport HTTP \textit{streaming}; expune unelte de evidență medicamentoasă cu cache, \textit{audit log}, \textit{rate limiting} și detectare a contextului clinic incomplet. \\
+Surse de date medicale & openFDA Drug Label, RxNorm (NLM), DailyMed (NLM). \\
+Plăți & Stripe Checkout pentru abonamente și pachete de mesaje, cu validarea semnăturii \textit{webhook}-urilor. \\
+Tooling & Python \texttt{venv} + \texttt{pip}, \texttt{npm}, Git, OpenAPI/Swagger auto-generat la \texttt{/docs}. \\
+\bottomrule
+\end{tabular}
+\caption{Sumar al stivei tehnologice}
+\label{tab:stack}
+\end{table}
+
+Arhitectura este \textbf{API-first} și \textbf{configuration-driven}: agenții și uneltele MCP pot fi adăugate sau înlocuite fără modificări la nivelul frontend-ului, iar restricțiile de acces (ce agenți și câte mesaje pot fi consumate) sunt centralizate în definițiile de \textit{tier}. Această separare permite rularea aplicației atât pe modele \textit{cloud} (Gemini) cât și, ulterior, pe modele \textit{open-source} găzduite pe GPU dedicat, cu efort minim de migrare.

@@ -1,0 +1,65 @@
+\section{Analiza riscurilor}
+
+Această secțiune rezumă riscurile critice ale proiectului, tipologia, impactul, probabilitatea de apariție și planurile de răspuns.
+
+\subsection{Dozaj incorect și halucinații ale AI (\textit{Liability Risk})}
+\begin{itemize}
+    \item \textbf{Identificare:} Din cauza erorilor inerente în sistemele AI sau a datelor de antrenament imperfecte, aplicația poate oferi dozaje greșite, interacțiuni medicamentoase eronate sau informații false (halucinații). Acest risc este strâns legat de dependența de date.
+    \item \textbf{Tip:} Tehnic (funcționare AI) și Business (reputație, legal).
+    \item \textbf{Impact:} \textbf{Critic}. poate periclita viața pacienților, atrage acțiuni în instanță, pierderea încrederii în brand și, posibil, închiderea afacerii.
+    \item \textbf{Probabilitate:} Medie.
+    \item \textbf{Plan de răspuns:}
+    \begin{itemize}
+        \item \textit{Mitigare (prevenire):} arhitectură \textit{Agentic AI} cu straturi de validare încrucișată; audituri periodice ale bazelor de date; model \textit{human-in-the-loop} pentru informațiile critice; \textit{disclaimer}-e clare privind caracterul consultativ al răspunsurilor.
+        \item \textit{Contingență (reacție):} asigurare de răspundere civilă profesională robustă și plan de comunicare de criză.
+    \end{itemize}
+\end{itemize}
+
+\subsection{Adoptare scăzută în rândul farmaciștilor (\textit{Adoption Barrier})}
+\begin{itemize}
+    \item \textbf{Identificare:} Farmaciștii, deja supraîncărcați, pot fi reticenți în a integra un instrument suplimentar dacă nu este integrat nativ în sistemul lor de gestiune.
+    \item \textbf{Tip:} Business (piață / vânzări) și Proiect (implementare).
+    \item \textbf{Impact:} \textbf{Ridicat}. produsul nu va genera venituri, efortul de dezvoltare va fi irosit, iar proiectul ar putea eșua.
+    \item \textbf{Probabilitate:} Ridicată.
+    \item \textbf{Plan de răspuns:}
+    \begin{itemize}
+        \item \textit{Mitigare:} interfață extrem de intuitivă și rapidă; integrare prioritară cu software-urile ERP de gestiune farmaceutică; materiale educaționale și sesiuni de \textit{training} scurte; model de \textit{pricing} flexibil (plan \textit{Starter} accesibil și pachete \textit{pay-as-you-go}).
+        \item \textit{Transfer:} parteneriate strategice cu asociații de farmaciști.
+    \end{itemize}
+\end{itemize}
+
+\subsection{Reglementări stricte și schimbătoare}
+\begin{itemize}
+    \item \textbf{Identificare:} Autoritățile pot introduce legi care să limiteze sau să interzică utilizarea AI în consultanță medicală sau să impună cerințe costisitoare de certificare.
+    \item \textbf{Tip:} Business (legal / conformitate).
+    \item \textbf{Impact:} \textbf{Critic}. poate forța modificări fundamentale ale produsului sau interzicerea funcționării în anumite jurisdicții.
+    \item \textbf{Probabilitate:} Medie spre Ridicată.
+    \item \textbf{Plan de răspuns:}
+    \begin{itemize}
+        \item \textit{Mitigare:} colaborare cu experți legali specializați; urmărirea activă a legislației (ex.: AI Act UE); principii de \textit{compliance-by-design}; pivotare către industria cosmetică ca alternativă.
+    \end{itemize}
+\end{itemize}
+
+\subsection{Dependența de date și întârzieri în actualizări}
+\begin{itemize}
+    \item \textbf{Identificare:} Agentul de \textit{facts} depinde de baze de date externe; întârzierile sau informațiile incomplete pot duce la erori.
+    \item \textbf{Tip:} Tehnic (sistem) și Proiect (operare).
+    \item \textbf{Impact:} \textbf{Mediu spre Ridicat}. informațiile depășite reduc valoarea produsului și cresc riscul legal.
+    \item \textbf{Probabilitate:} Medie.
+    \item \textbf{Plan de răspuns:}
+    \begin{itemize}
+        \item \textit{Mitigare:} acorduri SLA stricte cu furnizorii de baze de date; procese automate de verificare și integrare a actualizărilor; afișarea transparentă a datei ultimei actualizări.
+    \end{itemize}
+\end{itemize}
+
+\subsection{Concurența companiilor Big Pharma}
+\begin{itemize}
+    \item \textbf{Identificare:} Companii farmaceutice mari, cu resurse vaste și branduri consacrate, ar putea dezvolta propriile soluții AI.
+    \item \textbf{Tip:} Business (competitivitate).
+    \item \textbf{Impact:} \textbf{Ridicat}. ar putea oferi produse superioare sau gratuite, bazându-se pe încrederea deja stabilită.
+    \item \textbf{Probabilitate:} Medie.
+    \item \textbf{Plan de răspuns:}
+    \begin{itemize}
+        \item \textit{Mitigare:} agilitate și inovație rapidă pentru păstrarea avantajului tehnologic; concentrare pe nișa farmaciilor independente; explorarea de parteneriate cu Big Pharma (licențiere în loc de competiție).
+    \end{itemize}
+\end{itemize}

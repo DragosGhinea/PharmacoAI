@@ -1,0 +1,76 @@
+\section{Analiza de piață}
+
+\subsection{Principalii competitori}
+
+\paragraph{Sully.ai.} Se poziționează ca ,,AI Pharmacist'' pentru organizații medicale, cu accent pe verificarea medicației, verificarea interacțiunilor, managementul prescripțiilor și integrarea cu sisteme EHR (Epic, AthenaHealth, Cerner). Este puternic pe automatizare clinică și integrare \textit{enterprise}, dar orientat mai ales către spitale și sisteme mari, nu către farmacii comunitare.
+
+\paragraph{Pharmie AI.} Axat pe farmacii independente și pe automatizarea apelurilor, cererilor de \textit{refill}, întrebărilor despre asigurări, stoc și campanii \textit{outbound}. Soluție valoroasă operațional, dar accentul cade pe comunicații și \textit{front-desk}, nu pe analiză medicamentoasă multi-agent și sinteză clinică.
+
+\paragraph{Asepha.ai.} Construit în jurul automatizării procesării prescripțiilor și documentelor, folosind OCR pentru rețete scrise de mână, extragerea datelor și verificări de interacțiuni. Este puternic pe \textit{back-office} și eficiență administrativă, dar nu este orientat în primul rând spre conversația farmacist-pacient.
+
+\paragraph{Pharmesol.} ,,AI Pharmacy Agent'' pentru echipele din farmacii, cu accent pe automatizarea apelurilor, mesajelor, documentării și fluxurilor operaționale. Se integrează cu Pharmacy Management System, telefonie și \textit{scheduling}.
+
+\paragraph{PharmacyAI.} Aplicație orientată mai degrabă către utilizatorul final decât către farmacie. Funcționalități: verificarea interacțiunilor, căutare de informații, asistent AI multilingv, remindere, listă personală de medicamente și scanare foto. Este construit ca asistent mobil personal.
+
+\subsection{Matricea de funcționalități}
+
+\begin{table}[h!]
+\centering
+\small
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.2}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{|p{4.2cm}|c|c|c|c|c|c|}
+\hline
+\textbf{Funcționalitate} & \textbf{PharmacoAI} & \textbf{Sully.ai} & \textbf{Pharmie AI} & \textbf{Asepha.ai} & \textbf{Pharmesol} & \textbf{PharmacyAI} \\
+\hline
+Asistent conversațional general & DA & Parțial & DA & Parțial & DA & DA \\
+\hline
+Corectare/normalizare nume medicament & DA & NU & NU & Parțial & NU & Parțial \\
+\hline
+Identificare ingrediente active & DA & Parțial & Limitat & Parțial & NU & Parțial \\
+\hline
+Alternative similare în alte țări & DA & NU & NU & NU & NU & NU \\
+\hline
+Căutare informații în multiple baze de date & DA & Parțial & NU & NU & NU & NU \\
+\hline
+Sinteză automată a răspunsului medical & DA & Parțial & Limitat & Limitat & Parțial & DA \\
+\hline
+Traducere în limbaj uzual pentru pacient & DA & Limitat & Parțial & Limitat & DA & DA \\
+\hline
+Verificare combinații / interacțiuni & DA & DA & Limitat & DA & NU & DA \\
+\hline
+Informații despre dozaj & DA & Parțial & Limitat & Parțial & NU & NU \\
+\hline
+Subscripții multi-user & DA & NU & NU & NU & NU & NU \\
+\hline
+Top-up de mesaje & DA & NU & NU & NU & NU & NU \\
+\hline
+Acces pentru \textit{end-customer} & DA & NU & DA & Parțial & DA & DA \\
+\hline
+\end{tabular}%
+}
+\caption{Matricea comparativă a funcționalităților PharmacoAI vs. competiție}
+\label{tab:matrice_competitori}
+\end{table}
+
+\subsection{Avantaje competitive}
+\begin{itemize}
+    \item Reunește într-un singur flux funcții care în piață sunt dispersate între baze de date, verificatoare de interacțiuni și \textit{chatboți} operaționali.
+    \item Soluția este proiectată pentru farmacie ca \textbf{echipă}, nu doar pentru un clinician individual.
+    \item Poate funcționa atât \textbf{B2B} (către farmacii), cât și \textbf{B2B2C} (dacă farmacia alege să lase clienții să interacționeze prin contul propriu).
+    \item Găsirea alternativelor pentru un medicament specific este o soluție unică pe piață.
+\end{itemize}
+
+\subsection{Dezavantaje competitive}
+\begin{itemize}
+    \item Valoarea produsului depinde critic de calitatea bazelor de date medicale și de actualizarea lor continuă, iar competitorii consacrați au deja brand și credibilitate de conținut.
+    \item Funcții precum recomandări de dozaj sau verificarea combinării medicamentelor intră într-o zonă sensibilă de conformitate, responsabilitate profesională și reglementare, ceea ce impune mecanisme de \textit{disclaimer}, \textit{audit trail} și supraveghere umană.
+    \item Pentru competitorii \textit{enterprise}, avantajul integrării native în EHR/PMS poate fi greu de egalat în fazele incipiente ale startup-ului.
+    \item Nivel redus de încredere în uneltele farmaceutice bazate pe AI.
+\end{itemize}
+
+\subsection{Diferențiator-cheie}
+\begin{quote}
+\textbf{PharmacoAI este singura soluție de pe piață care oferă alternative locale și echivalente internaționale pentru un medicament dat, integrate într-un flux conversațional adresat simultan farmacistului și pacientului.}
+\end{quote}

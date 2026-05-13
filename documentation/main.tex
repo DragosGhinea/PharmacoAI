@@ -1,0 +1,112 @@
+\documentclass[12pt,a4paper]{article}
+
+% ---------- Encoding & language ----------
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[romanian]{babel}
+\usepackage{lmodern}
+
+% ---------- Page layout & typography ----------
+\usepackage[a4paper, margin=2.5cm]{geometry}
+\usepackage{microtype}
+\usepackage{parskip}
+\usepackage{setspace}
+
+% ---------- Graphics, tables, math ----------
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{array}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{tabularx}
+\usepackage{multirow}
+\usepackage{xcolor}
+\usepackage{float}
+\usepackage{pgfgantt}
+\usepackage[official]{eurosym}
+
+% ---------- Lists & enumeration ----------
+\usepackage{enumitem}
+\setlist{itemsep=2pt, topsep=4pt}
+
+% ---------- Hyperlinks ----------
+\usepackage{hyperref}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=black,
+    urlcolor=blue!60!black,
+    citecolor=black,
+    pdftitle={PharmacoAI -- Business Foundation},
+    pdfauthor={Echipa PharmacoAI}
+}
+
+% ---------- Document-wide commands ----------
+\newcommand{\source}[1]{\textit{\small (#1)}}
+
+\begin{document}
+
+% ---------- Custom title page ----------
+\begin{titlepage}
+\thispagestyle{empty}
+\centering
+
+\vspace*{0.5cm}
+
+{\small\scshape Universitatea din București \par Facultatea de Matematică și Informatică \par}
+% {\small\itshape Managementul Proiectelor Agile (MPA), 2026 \par}
+
+\vspace{1.2cm}
+
+{\color{blue!60!black}\rule{\linewidth}{1.2pt}}
+
+\vspace{0.6cm}
+
+{\Huge\bfseries PharmacoAI \par}
+\vspace{0.4cm}
+{\Large Plan de afaceri \par}
+{\large\itshape Asistent agentic pentru farmacii \par}
+
+\vspace{0.4cm}
+
+{\color{blue!60!black}\rule{\linewidth}{0.8pt}}
+
+\vspace{1.2cm}
+
+\includegraphics[width=0.42\textwidth]{Gemini_Generated_Image_ic7cxaic7cxaic7c.png}
+
+\vspace{0.8cm}
+
+{\large\itshape ,,Intelligence that heals. Innovation that scales.''\par}
+
+\vfill
+
+{\large\bfseries Autori \par}
+\vspace{0.3cm}
+\begin{tabular}{c}
+    Cucu Raul-Mihai \\[0.2em]
+    Ghinea Dragoș-Dumitru \\[0.2em]
+    Ghergu Ioana-Laura \\
+\end{tabular}
+
+\vspace{1cm}
+
+{\small \today \par}
+
+\end{titlepage}
+\tableofcontents
+\newpage
+
+% ---------- Capitole ----------
+\input{sections/01_rezumat_executiv}
+\input{sections/02_produs_si_user_stories}
+\input{sections/03_stiva_tehnologica}
+\input{sections/04_analiza_swot}
+\input{sections/05_analiza_market}
+\input{sections/06_riscuri}
+\input{sections/07_planificare}
+\input{sections/08_costuri_si_model_business}
+\input{sections/09_lean_canvas}
+\input{sections/10_concluzii}
+\input{sections/11_anexa_ai}
+
+\end{document}
